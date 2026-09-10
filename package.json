@@ -1,0 +1,34 @@
+{
+  "name": "markdown-parity-check",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Compares the main content of a web page's HTML and Markdown representations and reports concrete differences.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "bin": {
+    "markdown-parity-check": "./dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "node node_modules/typescript/bin/tsc -p tsconfig.json",
+    "typecheck": "node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
+    "check": "node dist/src/cli.js"
+  },
+  "dependencies": {
+    "css-select": "^7.0.0",
+    "domhandler": "^6.0.1",
+    "domutils": "^3.2.2",
+    "htmlparser2": "^12.0.0",
+    "mdast-util-from-markdown": "^2.0.2",
+    "mdast-util-gfm": "^3.1.0",
+    "micromark-extension-gfm": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/mdast": "^4.0.4",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  }
+}

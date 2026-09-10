@@ -1,0 +1,3 @@
+# Rendered client side
+
+Content.
