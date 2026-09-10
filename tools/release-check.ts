@@ -116,7 +116,10 @@ export function compareTarballs(local: Buffer, remote: Buffer): string[] {
 
 /** Fetches the registry record of one version. Returns null only for an explicit HTTP 404. */
 export async function fetchRegistryVersion(registry: string, name: string, version: string, fetchFn: FetchLike): Promise<RegistryVersion | null> {
-  const url = `${registry.replace(/\/$/, '')}/${encodeURIComponent(name).replace('%40', '@')}/${encodeURIComponent(version)}`;
+  // A scoped name keeps its leading @ and encodes the rest; the registry accepts @scope%2Fname.
+  const encodedName = name.startsWith('@') ? `@${encodeURIComponent(name.slice(1))}` : encodeURIComponent(name);
+  const base = registry.endsWith('/') ? registry.slice(0, -1) : registry;
+  const url = `${base}/${encodedName}/${encodeURIComponent(version)}`;
   let res: Awaited<ReturnType<FetchLike>>;
   try {
     res = await fetchFn(url, { headers: { accept: 'application/json' } });
