@@ -56,7 +56,7 @@ The comparison covers headings, paragraphs, lists, tables, code and links. It de
 
 HTML content selection prefers the main content container. A fallback to the page body produces a warning. JavaScript is not executed. Block matching is heuristic and some complex layouts need an explicit selector.
 
-URL fetching blocks non-public network targets and checks redirects. Request deadlines and response size limits bound network work. Reports mask URL query values, but content excerpts may still contain private information. Review reports before sharing them.
+URL fetching blocks non-public network targets and checks redirects. Request deadlines and response size limits bound network work. The comparison itself is bounded too: the product of the HTML and Markdown block counts may not exceed 4 000 000, which is 2 000 blocks on each side. Above that the tool exits with code 2 and an error instead of allocating memory without limit. Reports mask URL query values, but content excerpts may still contain private information. Review reports before sharing them.
 
 ## Run from source
 
@@ -72,7 +72,7 @@ The bundled example compares matching content. It explicitly removes the Markdow
 
 ## Development
 
-Run `npm run typecheck` and `npm test`. GitHub Actions tests Node.js 22 and 24 on Windows and Ubuntu. After CI passes on the main branch, the release workflow publishes the package version to npm when it is not there yet and creates the matching GitHub release with the package tarball attached.
+Run `npm run typecheck` and `npm test`. GitHub Actions tests Node.js 22 and 24 on Windows and Ubuntu. After CI passes on the main branch, the release workflow packs the tarball once, publishes it to npm when the version is not there yet, downloads the registry copy and checks its integrity hash and its content against the packed file. Only then does it create the GitHub release with that verified tarball attached. A version that exists on npm with different content stops the release.
 
 ## Security
 

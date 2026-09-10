@@ -37,29 +37,69 @@ function looseKey(b: Block): string {
 export const SIMILARITY_THRESHOLD = 0.6;
 export const UNCERTAIN_THRESHOLD = 0.8;
 
-function tokens(s: string): Map<string, number> {
-  const m = new Map<string, number>();
-  for (const t of s.split(' ')) if (t) m.set(t, (m.get(t) ?? 0) + 1);
-  return m;
+/** Upper bound on the alignment work, as the product of the HTML and Markdown block counts. The LCS
+ * table holds (n+1)*(m+1) Uint32 cells, 16 MiB at the limit (2 000 by 2 000 blocks), and the similarity
+ * search visits at most n*m block pairs. Above the limit the comparison stops with an error before any
+ * table is allocated, instead of growing without bound with the page size. */
+export const MAX_ALIGNMENT_PAIRS = 4_000_000;
+
+/** Upper bound on the similarity candidates kept for the greedy best-match pass. Only pairs at or above
+ * SIMILARITY_THRESHOLD are kept, so this is reached only when a large share of the free blocks on both
+ * sides resemble each other. */
+export const MAX_SIMILARITY_CANDIDATES = 1_000_000;
+
+/** Thrown when the comparison would exceed a documented resource limit. The caller reports it as an
+ * error result (exit 2), never as a pass or a silently truncated comparison. */
+export class AlignmentLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AlignmentLimitError';
+  }
+}
+
+interface TokenCounts {
+  counts: Map<string, number>;
+  total: number;
+}
+
+function tokens(s: string): TokenCounts {
+  const counts = new Map<string, number>();
+  let total = 0;
+  for (const t of s.split(' ')) {
+    if (!t) continue;
+    counts.set(t, (counts.get(t) ?? 0) + 1);
+    total++;
+  }
+  return { counts, total };
+}
+
+function dice(ta: TokenCounts, tb: TokenCounts): number {
+  if (ta.total === 0 || tb.total === 0) return 0;
+  let inter = 0;
+  for (const [t, c] of ta.counts) inter += Math.min(c, tb.counts.get(t) ?? 0);
+  return (2 * inter) / (ta.total + tb.total);
 }
 
 /** Dice coefficient over word tokens of the loose text. */
 export function similarity(a: Block, b: Block): number {
   if (a.loose === '' || b.loose === '') return 0;
-  const ta = tokens(a.loose);
-  const tb = tokens(b.loose);
-  let inter = 0;
-  let na = 0;
-  let nb = 0;
-  for (const [, c] of ta) na += c;
-  for (const [, c] of tb) nb += c;
-  for (const [t, c] of ta) inter += Math.min(c, tb.get(t) ?? 0);
-  return (2 * inter) / (na + nb);
+  return dice(tokens(a.loose), tokens(b.loose));
+}
+
+/** Checks the block counts against MAX_ALIGNMENT_PAIRS before any work is done. */
+export function checkAlignmentLimit(htmlBlocks: number, markdownBlocks: number): void {
+  const pairs = htmlBlocks * markdownBlocks;
+  if (pairs > MAX_ALIGNMENT_PAIRS) {
+    throw new AlignmentLimitError(
+      `Comparison limit exceeded: ${htmlBlocks} HTML blocks by ${markdownBlocks} Markdown blocks is ${pairs} block pairs, above the limit of ${MAX_ALIGNMENT_PAIRS}. Narrow the HTML content with --selector or compare a smaller page.`,
+    );
+  }
 }
 
 function lcs(keysA: string[], keysB: string[]): Array<[number, number]> {
   const n = keysA.length;
   const m = keysB.length;
+  checkAlignmentLimit(n, m);
   const dp: Uint32Array[] = [];
   for (let i = 0; i <= n; i++) dp.push(new Uint32Array(m + 1));
   for (let i = n - 1; i >= 0; i--) {
@@ -84,6 +124,7 @@ function lcs(keysA: string[], keysB: string[]): Array<[number, number]> {
 }
 
 export function align(a: Block[], b: Block[]): Alignment {
+  checkAlignmentLimit(a.length, b.length);
   const pairs: Pair[] = [];
   const usedA = new Set<number>();
   const usedB = new Set<number>();
@@ -137,15 +178,31 @@ export function align(a: Block[], b: Block[]): Alignment {
   }
 
   // Similar pairs: greedy best-match by similarity above the threshold, same type only. Ties are broken
-  // by document order to keep results deterministic.
+  // by document order to keep results deterministic. Token counts are computed once per block, and the
+  // candidate list is bounded by MAX_SIMILARITY_CANDIDATES.
+  const freeA: number[] = [];
+  const freeBs: number[] = [];
+  for (let i = 0; i < a.length; i++) if (!usedA.has(i)) freeA.push(i);
+  for (let j = 0; j < b.length; j++) if (!usedB.has(j)) freeBs.push(j);
+  const tokensA = new Map<number, TokenCounts>();
+  const tokensB = new Map<number, TokenCounts>();
+  for (const i of freeA) tokensA.set(i, tokens(a[i]!.loose));
+  for (const j of freeBs) tokensB.set(j, tokens(b[j]!.loose));
   const candidates: Array<{ i: number; j: number; s: number }> = [];
-  for (let i = 0; i < a.length; i++) {
-    if (usedA.has(i)) continue;
-    for (let j = 0; j < b.length; j++) {
-      if (usedB.has(j)) continue;
-      if (typeGroup(a[i]!) !== typeGroup(b[j]!)) continue;
-      const s = similarity(a[i]!, b[j]!);
-      if (s >= SIMILARITY_THRESHOLD) candidates.push({ i, j, s });
+  for (const i of freeA) {
+    const ta = tokensA.get(i)!;
+    if (ta.total === 0) continue;
+    const ga = typeGroup(a[i]!);
+    for (const j of freeBs) {
+      if (typeGroup(b[j]!) !== ga) continue;
+      const s = dice(ta, tokensB.get(j)!);
+      if (s < SIMILARITY_THRESHOLD) continue;
+      if (candidates.length >= MAX_SIMILARITY_CANDIDATES) {
+        throw new AlignmentLimitError(
+          `Comparison limit exceeded: more than ${MAX_SIMILARITY_CANDIDATES} similar block pairs among ${freeA.length} unmatched HTML blocks and ${freeBs.length} unmatched Markdown blocks. Narrow the HTML content with --selector or compare a smaller page.`,
+        );
+      }
+      candidates.push({ i, j, s });
     }
   }
   candidates.sort((x, y) => y.s - x.s || x.i - y.i || x.j - y.j);

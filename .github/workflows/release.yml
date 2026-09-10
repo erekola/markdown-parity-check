@@ -7,19 +7,22 @@ on:
 permissions:
   contents: read
 jobs:
-  npm:
+  release:
+    # One job on purpose: the tarball packed here is the file that is published to npm, compared with
+    # the registry copy, and attached to the GitHub release. Nothing is rebuilt between the steps.
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
-      contents: read
+      contents: write
       id-token: write
-    outputs:
-      name: ${{ steps.meta.outputs.name }}
-      version: ${{ steps.meta.outputs.version }}
+    env:
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -35,64 +38,97 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "name=$(node -p "require('./package.json').name")" >> "$GITHUB_OUTPUT"
-          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
-      - name: Publish to npm unless the version is already there
-        env:
-          NAME: ${{ steps.meta.outputs.name }}
-          VERSION: ${{ steps.meta.outputs.version }}
+          NAME="$(node -p "require('./package.json').name")"
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tarball=$NAME-$VERSION.tgz" >> "$GITHUB_OUTPUT"
+      - name: Install, check and test the tested commit
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$(npm view "$NAME@$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
-            echo "$NAME@$VERSION is already on the registry, nothing to publish"
-            exit 0
-          fi
           npm ci --ignore-scripts
           npm run typecheck
           npm test
-          # Authentication is OIDC trusted publishing only; no token is configured.
-          # The first version of a package is published by the maintainer, because a
-          # trusted publisher can only be configured on an existing package.
-          npm publish --access public
-          if [ "$(npm view "$NAME@$VERSION" version)" != "$VERSION" ]; then
-            echo "registry does not report $NAME@$VERSION after publish" >&2
-            exit 1
-          fi
-  release:
-    needs: npm
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    env:
-      NAME: ${{ needs.npm.outputs.name }}
-      VERSION: ${{ needs.npm.outputs.version }}
-      RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          package-manager-cache: false
-      - name: Create the GitHub release unless it exists
+      - name: Pack the release tarball once
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          TARBALL: ${{ steps.meta.outputs.tarball }}
         shell: bash
         run: |
           set -euo pipefail
-          TAG="v$VERSION"
+          mkdir -p .release/local .release/registry .release/asset
+          npm pack --pack-destination .release/local
+          test -f ".release/local/$TARBALL"
+          echo "local sha512: $(openssl dgst -sha512 -binary ".release/local/$TARBALL" | base64 -w0)"
+      - name: Publish to npm unless the registry already has this exact tarball
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TARBALL: ${{ steps.meta.outputs.tarball }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Exit 0: the version exists and equals the local tarball. Exit 10: the version is missing.
+          # Anything else (mismatch, wrong integrity, registry or network error) stops the release.
+          set +e
+          node dist/tools/release-check.js --tarball ".release/local/$TARBALL" --name "$NAME" --version "$VERSION" --save ".release/registry/$TARBALL"
+          CHECK=$?
+          set -e
+          if [ "$CHECK" -eq 10 ]; then
+            # Authentication is OIDC trusted publishing only; no token is configured. The very first
+            # version of a package is published by the maintainer, because a trusted publisher can only
+            # be configured on an existing package.
+            npm publish ".release/local/$TARBALL" --access public
+            node dist/tools/release-check.js --tarball ".release/local/$TARBALL" --name "$NAME" --version "$VERSION" --save ".release/registry/$TARBALL"
+          elif [ "$CHECK" -ne 0 ]; then
+            echo "release-check failed with exit $CHECK; not creating a tag or a release" >&2
+            exit 1
+          fi
+          test -f ".release/registry/$TARBALL"
+          cp ".release/registry/$TARBALL" ".release/asset/$TARBALL"
+          echo "registry sha512: $(openssl dgst -sha512 -binary ".release/asset/$TARBALL" | base64 -w0)"
+      - name: Create the GitHub release with the registry-verified tarball
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          TARBALL: ${{ steps.meta.outputs.tarball }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASSET=".release/asset/$TARBALL"
+          EXPECTED="$(openssl dgst -sha256 -binary "$ASSET" | base64 -w0)"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "release $TAG already exists"
+            # An existing release is accepted only when its tag points at this commit and its attached
+            # tarball is the registry-verified one; otherwise the mismatch is an error, not a skip.
+            TAG_SHA="$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)"
+            if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then
+              echo "tag $TAG points at $TAG_SHA, not at the tested commit $RELEASE_SHA" >&2
+              exit 1
+            fi
+            mkdir -p .release/existing
+            gh release download "$TAG" --pattern "$TARBALL" --dir .release/existing
+            ACTUAL="$(openssl dgst -sha256 -binary ".release/existing/$TARBALL" | base64 -w0)"
+            if [ "$ACTUAL" != "$EXPECTED" ]; then
+              echo "release $TAG carries a different $TARBALL than the registry" >&2
+              exit 1
+            fi
+            echo "release $TAG already exists with the verified tarball; nothing to do"
             exit 0
           fi
-          npm ci --ignore-scripts
-          npm pack
-          TARBALL="$NAME-$VERSION.tgz"
-          test -f "$TARBALL"
-          NOTES="Published on npm as $NAME@$VERSION. Install with \`npm install -g $NAME\` or run \`npx $NAME --help\`. Built from commit $RELEASE_SHA after CI passed on Node.js 22 and 24 on Windows and Ubuntu."
-          gh release create "$TAG" "$TARBALL" --target "$RELEASE_SHA" --title "$TAG" --notes "$NOTES"
+          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            TAG_SHA="$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)"
+            if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then
+              echo "tag $TAG exists at $TAG_SHA, not at the tested commit $RELEASE_SHA" >&2
+              exit 1
+            fi
+          fi
+          NOTES="Published on npm as $NAME@$VERSION. Install with \`npm install -g $NAME\` or run \`npx $NAME --help\`. The attached tarball is the registry copy, verified against its integrity hash. Built from commit $RELEASE_SHA after CI passed on Node.js 22 and 24 on Windows and Ubuntu."
+          gh release create "$TAG" "$ASSET" --target "$RELEASE_SHA" --title "$TAG" --notes "$NOTES"
+          TAG_SHA="$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)"
+          if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then
+            echo "created tag $TAG resolves to $TAG_SHA, expected $RELEASE_SHA" >&2
+            exit 1
+          fi
+          echo "release $TAG created at $RELEASE_SHA with $TARBALL"

@@ -1,6 +1,7 @@
 // Orchestration: takes resolved inputs (already fetched or read), runs extraction and comparison, and
 // builds the report object. No argument parsing and no I/O here.
 
+import { AlignmentLimitError } from './align.js';
 import { compare, type Coverage } from './compare.js';
 import { extractHtml, HtmlExtractError } from './html.js';
 import { extractMarkdown } from './markdown.js';
@@ -158,7 +159,13 @@ export function run(html: SourceInput, markdown: SourceInput, options: RunOption
   if (h.blocks.length === 0) throw new RunError(`HTML main content is empty (strategy ${h.strategy}); nothing to compare.`);
   if (m.blocks.length === 0) throw new RunError('Markdown content is empty; nothing to compare.');
 
-  const result = compare(h, m, { bothBases: html.base !== null && markdown.base !== null });
+  let result: ReturnType<typeof compare>;
+  try {
+    result = compare(h, m, { bothBases: html.base !== null && markdown.base !== null });
+  } catch (err) {
+    if (err instanceof AlignmentLimitError) throw new RunError(err.message);
+    throw err;
+  }
   const findings = [...delivery, ...result.findings];
   const c = count(findings);
   const failing = c.errors > 0 || (options.strict && c.warnings > 0);
