@@ -7,7 +7,7 @@ import type { Nodes, Parent, PhrasingContent, Root, RootContent, Table } from 'm
 import type { Block, Extraction, ExtractionIssue, Link } from './model.js';
 import { extractHtml } from './html.js';
 import { parseDocument } from 'htmlparser2';
-import { Element } from 'domhandler';
+import { Element, Text, type ChildNode } from 'domhandler';
 import { excerpt, extractNumbers, looseNormalize, normalizeCode, resolveHref, strictNormalize } from './normalize.js';
 
 export interface MarkdownExtractOptions {
@@ -250,14 +250,13 @@ function handle(ctx: Ctx, node: RootContent, listItem = false): void {
 /** A raw HTML block in Markdown is parsed with the HTML extractor so its content takes part in the
  * comparison; the report shows that this happened. Comments and bare tags without text yield nothing. */
 function handleRawHtml(ctx: Ctx, value: string, line: number | undefined): void {
-  const withoutComments = value.replace(/<!--[\s\S]*?-->/g, '');
-  // Text check for the fallback warning: script, style, template and noscript are page machinery on both
-  // sides, so their content does not count as skipped text.
-  const visibleSource = withoutComments.replace(/<(script|style|template|noscript)\b[\s\S]*?<\/\1\s*>/gi, ' ');
-  const textOnly = strictNormalize(visibleSource.replace(/<[^>]*>/g, ' '));
+  // Text check for the fallback warning, taken from the parsed DOM rather than from regex stripping:
+  // comments are not text, and script, style, template and noscript are page machinery on both sides,
+  // so their content does not count as skipped text.
+  const textOnly = visibleText(value);
   let parsed: Extraction | null = null;
   try {
-    parsed = extractHtml(`<body>${withoutComments}</body>`, { selector: 'body', baseUrl: ctx.base });
+    parsed = extractHtml(`<body>${value}</body>`, { selector: 'body', baseUrl: ctx.base });
   } catch {
     parsed = null;
   }
@@ -274,6 +273,25 @@ function handleRawHtml(ctx: Ctx, value: string, line: number | undefined): void 
   } else if (textOnly !== '') {
     ctx.issues.push({ code: 'MARKDOWN_RAW_HTML_SKIPPED', severity: 'warning', message: 'A raw HTML block in the Markdown carries text that could not be parsed into blocks; it was not compared.', line, excerpt: excerpt(textOnly) });
   }
+}
+
+const MACHINERY = new Set(['script', 'style', 'template', 'noscript']);
+
+/** Strictly normalized text of an HTML fragment as a parser sees it: text nodes only, comments and
+ * machinery elements excluded. */
+function visibleText(fragment: string): string {
+  const parts: string[] = [];
+  const walk = (nodes: ChildNode[]): void => {
+    for (const node of nodes) {
+      if (node instanceof Text) parts.push(node.data);
+      else if (node instanceof Element) {
+        if (MACHINERY.has(node.name.toLowerCase())) continue;
+        walk(node.children);
+      }
+    }
+  };
+  walk(parseDocument(fragment).children);
+  return strictNormalize(parts.join(' '));
 }
 
 const YAML_LINE = /^(?:[A-Za-z0-9_.-]+\s*:(?:\s|$)|\s+\S|-\s|#)/;

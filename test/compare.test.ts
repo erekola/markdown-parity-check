@@ -217,6 +217,17 @@ describe('regressions from the 2026-09-10 review', () => {
     assert.deepEqual(script.findings, []);
     const nested = extractMarkdown('Intro.\n\n<div>\n<p>First</p>\n<p>Second</p>\n</div>\n');
     assert.deepEqual(nested.blocks.map((b) => [b.text, b.location.line]), [['Intro.', 1], ['First', 4], ['Second', 5]]);
+    // CodeQL js/incomplete-multi-character-sanitization (2026-09-10): the visible-text check reads the
+    // parsed DOM instead of stripping comments with a regex, so nested or broken comment markers are read
+    // the way a browser reads them. A script inside a comment is never text, and the text left over
+    // after a broken comment is compared as the text a reader sees.
+    const commented = compare(extractHtml('<main><p>Visible.</p></main>'), extractMarkdown('Visible.\n\n<!-- <p>Not shown</p> --><!--<script>alert(1)</script>-->\n'));
+    assert.deepEqual(commented.findings, []);
+    const broken = compare(extractHtml('<main><p>Visible.</p></main>'), extractMarkdown('Visible.\n\n<!-<!-- x -->- leftover --><!--<script>alert(1)</script>-->\n'));
+    assert.deepEqual(codes(broken.findings), ['BLOCK_ADDED']);
+    const excerptText = broken.findings[0]?.markdown?.excerpt ?? '';
+    assert.equal(excerptText.includes('script'), false);
+    assert.equal(excerptText.includes('leftover'), true);
   });
   it('6. front matter is never removed by default; strip is explicit and always reported', () => {
     const prose = compare(extractHtml('<main><p>Keep.</p></main>'), extractMarkdown('---\nImportant missing condition.\n---\nKeep.\n'));
