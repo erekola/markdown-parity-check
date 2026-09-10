@@ -1,9 +1,25 @@
 {
   "name": "markdown-parity-check",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.1",
   "description": "Compares the main content of a web page's HTML and Markdown representations and reports concrete differences.",
-  "license": "UNLICENSED",
+  "keywords": [
+    "markdown",
+    "html",
+    "parity",
+    "content-negotiation",
+    "llms-txt",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "Erik Rekola",
+  "homepage": "https://github.com/erekola/markdown-parity-check#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/erekola/markdown-parity-check.git"
+  },
+  "bugs": {
+    "url": "https://github.com/erekola/markdown-parity-check/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.0.0"
@@ -11,11 +27,16 @@
   "bin": {
     "markdown-parity-check": "./dist/src/cli.js"
   },
+  "files": [
+    "dist/src/",
+    "SECURITY.md"
+  ],
   "scripts": {
     "build": "node node_modules/typescript/bin/tsc -p tsconfig.json",
     "typecheck": "node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
-    "check": "node dist/src/cli.js"
+    "check": "node dist/src/cli.js",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "css-select": "^7.0.0",

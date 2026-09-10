@@ -8,3 +8,5 @@
 !/src/
 !/test/
 !/.github/
+!/LICENSE
+!/SECURITY.md

@@ -7,29 +7,92 @@ on:
 permissions:
   contents: read
 jobs:
-  release:
+  npm:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
-      contents: write
+      contents: read
+      id-token: write
+    outputs:
+      name: ${{ steps.meta.outputs.name }}
+      version: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-      - name: Publish v0.1.0
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+      - name: Read package name and version
+        id: meta
         shell: bash
         run: |
           set -euo pipefail
-          if gh release view v0.1.0 >/dev/null 2>&1; then
+          echo "name=$(node -p "require('./package.json').name")" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Publish to npm unless the version is already there
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$(npm view "$NAME@$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
+            echo "$NAME@$VERSION is already on the registry, nothing to publish"
             exit 0
           fi
-          gh release create v0.1.0 --target "$RELEASE_SHA" --title v0.1.0 --notes-file README.md
+          npm ci --ignore-scripts
+          npm run typecheck
+          npm test
+          # Authentication is OIDC trusted publishing only; no token is configured.
+          # The first version of a package is published by the maintainer, because a
+          # trusted publisher can only be configured on an existing package.
+          npm publish --access public
+          if [ "$(npm view "$NAME@$VERSION" version)" != "$VERSION" ]; then
+            echo "registry does not report $NAME@$VERSION after publish" >&2
+            exit 1
+          fi
+  release:
+    needs: npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      NAME: ${{ needs.npm.outputs.name }}
+      VERSION: ${{ needs.npm.outputs.version }}
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Create the GitHub release unless it exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists"
+            exit 0
+          fi
+          npm ci --ignore-scripts
+          npm pack
+          TARBALL="$NAME-$VERSION.tgz"
+          test -f "$TARBALL"
+          NOTES="Published on npm as $NAME@$VERSION. Install with \`npm install -g $NAME\` or run \`npx $NAME --help\`. Built from commit $RELEASE_SHA after CI passed on Node.js 22 and 24 on Windows and Ubuntu."
+          gh release create "$TAG" "$TARBALL" --target "$RELEASE_SHA" --title "$TAG" --notes "$NOTES"
