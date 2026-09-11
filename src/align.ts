@@ -48,6 +48,34 @@ export const MAX_ALIGNMENT_PAIRS = 4_000_000;
  * sides resemble each other. */
 export const MAX_SIMILARITY_CANDIDATES = 1_000_000;
 
+/** Resource limits of the alignment. The defaults are the CLI's. A host with a smaller CPU or memory
+ * budget, such as a Cloudflare Worker, passes lower values through RunOptions.limits. Exceeding any of
+ * them is an AlignmentLimitError, reported as an error result, never as a pass or a truncated
+ * comparison. */
+export interface AlignmentLimits {
+  /** Upper bound on the product of the HTML and Markdown block counts. */
+  maxAlignmentPairs: number;
+  /** Upper bound on the similarity candidates kept for the greedy best-match pass. */
+  maxSimilarityCandidates: number;
+  /** Upper bound on token lookups in the similarity search, summed over every block pair it visits.
+   * Unbounded by default; the block pair limit already bounds it for the CLI. */
+  maxSimilarityWork: number;
+}
+
+export const DEFAULT_LIMITS: Readonly<AlignmentLimits> = Object.freeze({
+  maxAlignmentPairs: MAX_ALIGNMENT_PAIRS,
+  maxSimilarityCandidates: MAX_SIMILARITY_CANDIDATES,
+  maxSimilarityWork: Number.POSITIVE_INFINITY,
+});
+
+function resolveLimits(limits: Partial<AlignmentLimits> | undefined): AlignmentLimits {
+  const out = { ...DEFAULT_LIMITS, ...(limits ?? {}) };
+  for (const [k, v] of Object.entries(out)) {
+    if (typeof v !== 'number' || Number.isNaN(v) || v <= 0) throw new TypeError(`Alignment limit ${k} must be a positive number (got ${String(v)}).`);
+  }
+  return out;
+}
+
 /** Thrown when the comparison would exceed a documented resource limit. The caller reports it as an
  * error result (exit 2), never as a pass or a silently truncated comparison. */
 export class AlignmentLimitError extends Error {
@@ -86,20 +114,21 @@ export function similarity(a: Block, b: Block): number {
   return dice(tokens(a.loose), tokens(b.loose));
 }
 
-/** Checks the block counts against MAX_ALIGNMENT_PAIRS before any work is done. */
-export function checkAlignmentLimit(htmlBlocks: number, markdownBlocks: number): void {
+/** Checks the block counts against the block pair limit (MAX_ALIGNMENT_PAIRS by default) before any
+ * work is done. */
+export function checkAlignmentLimit(htmlBlocks: number, markdownBlocks: number, maxPairs: number = MAX_ALIGNMENT_PAIRS): void {
   const pairs = htmlBlocks * markdownBlocks;
-  if (pairs > MAX_ALIGNMENT_PAIRS) {
+  if (pairs > maxPairs) {
     throw new AlignmentLimitError(
-      `Comparison limit exceeded: ${htmlBlocks} HTML blocks by ${markdownBlocks} Markdown blocks is ${pairs} block pairs, above the limit of ${MAX_ALIGNMENT_PAIRS}. Narrow the HTML content with --selector or compare a smaller page.`,
+      `Comparison limit exceeded: ${htmlBlocks} HTML blocks by ${markdownBlocks} Markdown blocks is ${pairs} block pairs, above the limit of ${maxPairs}. Narrow the HTML content with --selector or compare a smaller page.`,
     );
   }
 }
 
-function lcs(keysA: string[], keysB: string[]): Array<[number, number]> {
+function lcs(keysA: string[], keysB: string[], maxPairs: number): Array<[number, number]> {
   const n = keysA.length;
   const m = keysB.length;
-  checkAlignmentLimit(n, m);
+  checkAlignmentLimit(n, m, maxPairs);
   const dp: Uint32Array[] = [];
   for (let i = 0; i <= n; i++) dp.push(new Uint32Array(m + 1));
   for (let i = n - 1; i >= 0; i--) {
@@ -123,15 +152,16 @@ function lcs(keysA: string[], keysB: string[]): Array<[number, number]> {
   return out;
 }
 
-export function align(a: Block[], b: Block[]): Alignment {
-  checkAlignmentLimit(a.length, b.length);
+export function align(a: Block[], b: Block[], limits?: Partial<AlignmentLimits>): Alignment {
+  const lim = resolveLimits(limits);
+  checkAlignmentLimit(a.length, b.length, lim.maxAlignmentPairs);
   const pairs: Pair[] = [];
   const usedA = new Set<number>();
   const usedB = new Set<number>();
   const keysA = a.map(strictKey);
   const keysB = b.map(strictKey);
 
-  for (const [i, j] of lcs(keysA, keysB)) {
+  for (const [i, j] of lcs(keysA, keysB, lim.maxAlignmentPairs)) {
     pairs.push({ a: i, b: j, kind: 'exact', similarity: 1 });
     usedA.add(i);
     usedB.add(j);
@@ -189,17 +219,26 @@ export function align(a: Block[], b: Block[]): Alignment {
   for (const i of freeA) tokensA.set(i, tokens(a[i]!.loose));
   for (const j of freeBs) tokensB.set(j, tokens(b[j]!.loose));
   const candidates: Array<{ i: number; j: number; s: number }> = [];
+  // Token lookups so far. dice() walks the HTML block's distinct tokens once per visited pair, so this
+  // is the work the search does, and a host with a small CPU budget bounds it through the limits.
+  let work = 0;
   for (const i of freeA) {
     const ta = tokensA.get(i)!;
     if (ta.total === 0) continue;
     const ga = typeGroup(a[i]!);
     for (const j of freeBs) {
       if (typeGroup(b[j]!) !== ga) continue;
+      work += ta.counts.size;
+      if (work > lim.maxSimilarityWork) {
+        throw new AlignmentLimitError(
+          `Comparison limit exceeded: the similarity search among ${freeA.length} unmatched HTML blocks and ${freeBs.length} unmatched Markdown blocks needs more than ${lim.maxSimilarityWork} token comparisons. Narrow the HTML content with --selector or compare a smaller page.`,
+        );
+      }
       const s = dice(ta, tokensB.get(j)!);
       if (s < SIMILARITY_THRESHOLD) continue;
-      if (candidates.length >= MAX_SIMILARITY_CANDIDATES) {
+      if (candidates.length >= lim.maxSimilarityCandidates) {
         throw new AlignmentLimitError(
-          `Comparison limit exceeded: more than ${MAX_SIMILARITY_CANDIDATES} similar block pairs among ${freeA.length} unmatched HTML blocks and ${freeBs.length} unmatched Markdown blocks. Narrow the HTML content with --selector or compare a smaller page.`,
+          `Comparison limit exceeded: more than ${lim.maxSimilarityCandidates} similar block pairs among ${freeA.length} unmatched HTML blocks and ${freeBs.length} unmatched Markdown blocks. Narrow the HTML content with --selector or compare a smaller page.`,
         );
       }
       candidates.push({ i, j, s });

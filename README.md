@@ -56,7 +56,20 @@ The comparison covers headings, paragraphs, lists, tables, code and links. It de
 
 HTML content selection prefers the main content container. A fallback to the page body produces a warning. JavaScript is not executed. Block matching is heuristic and some complex layouts need an explicit selector.
 
-URL fetching blocks non-public network targets and checks redirects. Request deadlines and response size limits bound network work. The comparison itself is bounded too: the product of the HTML and Markdown block counts may not exceed 4 000 000, which is 2 000 blocks on each side. Above that the tool exits with code 2 and an error instead of allocating memory without limit. Reports mask URL query values, but content excerpts may still contain private information. Review reports before sharing them.
+URL fetching blocks non-public network targets and checks redirects. Request deadlines and response size limits bound network work. The comparison itself is bounded too: the product of the HTML and Markdown block counts may not exceed 4 000 000, which is 2 000 blocks on each side. Above that the tool exits with code 2 and an error instead of allocating memory without limit. HTML or Markdown nested deeper than 1 024 levels also ends with code 2, before the extraction can exhaust the call stack. Reports mask URL query values, but content excerpts may still contain private information. Review reports before sharing them.
+
+## Library use
+
+The package has a library entry as well. It runs the same comparison as the command, without the command-line interface, the file reader or the network code. It uses no Node.js built-in modules, so it can also be bundled for Cloudflare Workers.
+
+```js
+import { run, renderJson } from 'markdown-parity-check';
+
+const report = run(htmlSource, markdownSource, { strict: false, mode: 'url' });
+console.log(renderJson(report));
+```
+
+Each source is an object with the document text, a base URL for links and the source details the report shows. The report is the same object that `--format json` prints. A host with a smaller CPU or memory budget can pass lower limits in the `limits` option, and a run that exceeds one ends with an error. Fetching the pages and deciding which addresses may be fetched stays with the caller. The address policy the command applies is exported as `assertPublicHost` and `isPublicAddress`.
 
 ## Run from source
 

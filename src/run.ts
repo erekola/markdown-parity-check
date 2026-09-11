@@ -1,10 +1,10 @@
 // Orchestration: takes resolved inputs (already fetched or read), runs extraction and comparison, and
 // builds the report object. No argument parsing and no I/O here.
 
-import { AlignmentLimitError } from './align.js';
+import { AlignmentLimitError, type AlignmentLimits } from './align.js';
 import { compare, type Coverage } from './compare.js';
-import { extractHtml, HtmlExtractError } from './html.js';
-import { extractMarkdown } from './markdown.js';
+import { extractHtml, HtmlExtractError, MAX_NESTING_DEPTH } from './html.js';
+import { extractMarkdown, MarkdownExtractError } from './markdown.js';
 import type { Extraction, Finding } from './model.js';
 import { maskUrl } from './normalize.js';
 import { TOOL_VERSION } from './version.js';
@@ -37,6 +37,22 @@ export interface RunOptions {
   frontMatter?: 'keep' | 'strip';
   strict: boolean;
   mode: 'url' | 'offline';
+  /** Lower alignment limits for a host with a smaller CPU or memory budget. Omitted: the CLI defaults
+   * (DEFAULT_LIMITS). The limits never change a finding; they only decide when the run stops with an
+   * error instead of completing. */
+  limits?: Partial<RunLimits>;
+}
+
+/** Every resource limit of a run: the alignment limits plus the nesting depth both extractors accept. */
+export type RunLimits = AlignmentLimits & { maxNestingDepth: number };
+
+export { MAX_NESTING_DEPTH };
+
+/** Parser stack exhaustion on hostile nesting is reported as a comparison error, never as a crash. */
+function extractionError(side: 'HTML' | 'Markdown', err: unknown): RunError | null {
+  if (err instanceof HtmlExtractError || err instanceof MarkdownExtractError) return new RunError(err.message);
+  if (err instanceof RangeError) return new RunError(`The ${side} could not be parsed within the call stack (${err.message}); it is nested too deeply to compare.`);
+  return null;
 }
 
 export interface ExtractionMeta {
@@ -147,21 +163,27 @@ export function run(html: SourceInput, markdown: SourceInput, options: RunOption
     return report;
   }
 
+  const maxDepth = options.limits?.maxNestingDepth ?? MAX_NESTING_DEPTH;
+  if (typeof maxDepth !== 'number' || Number.isNaN(maxDepth) || maxDepth <= 0) throw new TypeError(`Limit maxNestingDepth must be a positive number (got ${String(maxDepth)}).`);
   let h: Extraction;
   try {
-    h = extractHtml(html.body, { selector: options.selector, baseUrl: html.base });
+    h = extractHtml(html.body, { selector: options.selector, baseUrl: html.base, maxDepth });
   } catch (err) {
-    if (err instanceof HtmlExtractError) throw new RunError(err.message);
-    throw err;
+    throw extractionError('HTML', err) ?? err;
   }
-  const m = extractMarkdown(markdown.body, { baseUrl: markdown.base, frontMatter: options.frontMatter ?? 'keep' });
+  let m: Extraction;
+  try {
+    m = extractMarkdown(markdown.body, { baseUrl: markdown.base, frontMatter: options.frontMatter ?? 'keep', maxDepth });
+  } catch (err) {
+    throw extractionError('Markdown', err) ?? err;
+  }
   report.extraction = { html: meta(h), markdown: meta(m) };
   if (h.blocks.length === 0) throw new RunError(`HTML main content is empty (strategy ${h.strategy}); nothing to compare.`);
   if (m.blocks.length === 0) throw new RunError('Markdown content is empty; nothing to compare.');
 
   let result: ReturnType<typeof compare>;
   try {
-    result = compare(h, m, { bothBases: html.base !== null && markdown.base !== null });
+    result = compare(h, m, { bothBases: html.base !== null && markdown.base !== null, limits: options.limits });
   } catch (err) {
     if (err instanceof AlignmentLimitError) throw new RunError(err.message);
     throw err;

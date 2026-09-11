@@ -5,7 +5,7 @@ import { gfm } from 'micromark-extension-gfm';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import type { Nodes, Parent, PhrasingContent, Root, RootContent, Table } from 'mdast';
 import type { Block, Extraction, ExtractionIssue, Link } from './model.js';
-import { extractHtml } from './html.js';
+import { extractHtml, MAX_NESTING_DEPTH } from './html.js';
 import { parseDocument } from 'htmlparser2';
 import { Element, Text, type ChildNode } from 'domhandler';
 import { excerpt, extractNumbers, looseNormalize, normalizeCode, resolveHref, strictNormalize } from './normalize.js';
@@ -18,6 +18,22 @@ export interface MarkdownExtractOptions {
    * carries front matter, so the leading fenced block is removed and reported as info.
    */
   frontMatter?: 'keep' | 'strip';
+  /** Deepest node nesting accepted in the parsed Markdown tree. Default MAX_NESTING_DEPTH. */
+  maxDepth?: number;
+}
+
+export class MarkdownExtractError extends Error {}
+
+/** Deepest node nesting of a Markdown tree, counted with an explicit stack. */
+function treeDepth(tree: Root): number {
+  let max = 0;
+  const stack: Array<[Nodes, number]> = [[tree, 0]];
+  while (stack.length > 0) {
+    const [n, d] = stack.pop()!;
+    if (d > max) max = d;
+    if ('children' in n) for (const c of (n as Parent).children) stack.push([c as Nodes, d + 1]);
+  }
+  return max;
 }
 
 interface Ctx {
@@ -341,6 +357,9 @@ export function extractMarkdown(source: string, options: MarkdownExtractOptions 
   const mode = options.frontMatter ?? 'keep';
   const fm = scanFrontMatter(source, mode);
   const tree: Root = fromMarkdown(fm.text, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
+  const maxDepth = options.maxDepth ?? MAX_NESTING_DEPTH;
+  const depth = treeDepth(tree);
+  if (depth > maxDepth) throw new MarkdownExtractError(`Markdown nesting depth ${depth} exceeds the limit of ${maxDepth} levels; the comparison was not run.`);
   const ctx: Ctx = { base: options.baseUrl ?? null, blocks: [], notes: [], issues: [], definitions: collectDefinitions(tree) };
   const fmExcerpt = () => excerpt(fm.body.replace(/\s+/g, ' '));
   if (mode === 'strip' && fm.skippedLines > 0) {

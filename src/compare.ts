@@ -1,6 +1,6 @@
 // The comparison core: aligns blocks and turns the alignment into findings. Pure and network-free.
 
-import { align, UNCERTAIN_THRESHOLD, type Pair } from './align.js';
+import { align, UNCERTAIN_THRESHOLD, type AlignmentLimits, type Pair } from './align.js';
 import type { Block, Extraction, Finding, FindingSide, Link } from './model.js';
 import { excerpt, hrefDifference, maskHref, redactText } from './normalize.js';
 
@@ -147,10 +147,10 @@ function comparePair(out: Finding[], p: Pair, h: Block, m: Block, bothBases: boo
 
 const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 };
 
-export function compare(html: Extraction, markdown: Extraction, options: { bothBases?: boolean } = {}): CompareResult {
+export function compare(html: Extraction, markdown: Extraction, options: { bothBases?: boolean; limits?: Partial<AlignmentLimits> } = {}): CompareResult {
   const a = html.blocks;
   const b = markdown.blocks;
-  const al = align(a, b);
+  const al = align(a, b, options.limits);
   const findings: Finding[] = [];
   const bothBases = options.bothBases ?? false;
 

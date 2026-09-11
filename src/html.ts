@@ -3,7 +3,7 @@
 
 import { parseDocument } from 'htmlparser2';
 import { selectAll, selectOne } from 'css-select';
-import { Element, Text, type AnyNode, type ChildNode, type Document } from 'domhandler';
+import { Element, Text, type AnyNode, type ChildNode, type Document, type ParentNode } from 'domhandler';
 import { textContent } from 'domutils';
 import type { Block, Extraction, Link } from './model.js';
 import { extractNumbers, looseNormalize, normalizeCode, resolveHref, strictNormalize } from './normalize.js';
@@ -13,9 +13,30 @@ export interface HtmlExtractOptions {
   selector?: string;
   /** Base URL for resolving relative links; a <base href> in the document takes precedence. */
   baseUrl?: string | null;
+  /** Deepest element nesting accepted, counted from the document root. Default MAX_NESTING_DEPTH. */
+  maxDepth?: number;
 }
 
 export class HtmlExtractError extends Error {}
+
+/** Default nesting limit for both extractors. The extraction walks the tree recursively, and a document
+ * nested a few thousand levels deep exhausts the call stack (measured 2026-09-11: 5 000 nested div
+ * elements under Node.js 24). Real pages stay far below this. */
+export const MAX_NESTING_DEPTH = 1024;
+
+/** Deepest element nesting under a node, counted with an explicit stack so the count itself cannot
+ * exhaust the call stack. */
+export function nestingDepth(node: ParentNode): number {
+  let max = 0;
+  const stack: Array<[ChildNode, number]> = node.children.map((c) => [c, 1]);
+  while (stack.length > 0) {
+    const [n, d] = stack.pop()!;
+    if (!(n instanceof Element)) continue;
+    if (d > max) max = d;
+    for (const c of n.children) stack.push([c, d + 1]);
+  }
+  return max;
+}
 
 const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'template', 'nav', 'iframe', 'svg', 'canvas', 'object', 'embed', 'map', 'form', 'button', 'input', 'select', 'textarea', 'dialog']);
 const SKIP_ROLES = new Set(['navigation', 'banner', 'contentinfo', 'complementary', 'search', 'menu', 'menubar', 'dialog']);
@@ -296,6 +317,10 @@ function pickRoot(doc: Document, selector: string | undefined, notes: string[]):
 
 export function extractHtml(source: string, options: HtmlExtractOptions = {}): Extraction {
   const doc = parseDocument(source, { withStartIndices: true, withEndIndices: true, decodeEntities: true });
+  // Before any selector runs: the selector engine and the extraction below both recurse over the tree.
+  const maxDepth = options.maxDepth ?? MAX_NESTING_DEPTH;
+  const depth = nestingDepth(doc);
+  if (depth > maxDepth) throw new HtmlExtractError(`HTML nesting depth ${depth} exceeds the limit of ${maxDepth} levels; the comparison was not run.`);
   const notes: string[] = [];
   const baseEl = selectOne('base[href]', doc.children) as AnyNode | null;
   let base: string | null = options.baseUrl ?? null;

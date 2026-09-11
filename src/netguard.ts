@@ -1,8 +1,7 @@
 // Address policy for the URL mode: only public unicast addresses are fetched. The check runs on the
 // URL host, on every DNS answer and on every redirect target, and the checked address is the one the
-// socket connects to (see fetch.ts).
-
-import { isIP } from 'node:net';
+// socket connects to (see fetch.ts). No Node.js import: the same policy is used by hosts that fetch
+// with their own transport, such as a Cloudflare Worker (see core.ts).
 
 export class BlockedAddressError extends Error {
   constructor(message: string) {
@@ -33,6 +32,42 @@ const V4_BLOCKED: Array<[string, number]> = [
   ['224.0.0.0', 4],
   ['240.0.0.0', 4],
 ];
+
+const V4_OCTET = '(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)';
+const V4_RE = new RegExp(`^(?:${V4_OCTET}\\.){3}${V4_OCTET}$`);
+
+/**
+ * IP version of a literal: 4, 6, or 0 when the string is neither. Dotted-quad IPv4 without leading
+ * zeros, and IPv6 with at most one "::", hex groups of one to four digits, an optional dotted-quad
+ * tail and an optional zone. test/core.test.ts compares the answers with node:net isIP.
+ */
+export function ipVersion(s: string): 0 | 4 | 6 {
+  if (V4_RE.test(s)) return 4;
+  if (!s.includes(':')) return 0;
+  let addr = s;
+  const zone = addr.indexOf('%');
+  if (zone >= 0) {
+    if (!/^[0-9a-zA-Z.:-]+$/.test(addr.slice(zone + 1))) return 0;
+    addr = addr.slice(0, zone);
+  }
+  if (!/^[0-9a-fA-F:.]+$/.test(addr)) return 0;
+  const lastColon = addr.lastIndexOf(':');
+  const tail = addr.slice(lastColon + 1);
+  if (tail.includes('.')) {
+    if (!V4_RE.test(tail)) return 0;
+    addr = addr.slice(0, lastColon + 1) + '0:0';
+  }
+  if (addr.includes('.')) return 0;
+  const halves = addr.split('::');
+  if (halves.length > 2) return 0;
+  const groups = (h: string) => (h === '' ? [] : h.split(':'));
+  const head = groups(halves[0]!);
+  const rest = halves.length === 2 ? groups(halves[1]!) : [];
+  for (const g of [...head, ...rest]) if (!/^[0-9a-fA-F]{1,4}$/.test(g)) return 0;
+  const count = head.length + rest.length;
+  if (halves.length === 1) return count === 8 ? 6 : 0;
+  return count <= 7 ? 6 : 0;
+}
 
 export function isPublicIPv4(ip: string): boolean {
   const n = ipv4ToInt(ip);
@@ -92,7 +127,7 @@ function v4FromGroups(hi: number, lo: number): string {
 }
 
 export function isPublicAddress(ip: string): boolean {
-  const v = isIP(ip);
+  const v = ipVersion(ip);
   if (v === 4) return isPublicIPv4(ip);
   if (v === 6) return isPublicIPv6(ip);
   return false;
@@ -105,7 +140,7 @@ export function assertPublicHost(hostname: string): void {
   if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.home.arpa') || h === '') {
     throw new BlockedAddressError(`Host "${hostname}" is a local name and is not fetched.`);
   }
-  if (isIP(h) && !isPublicAddress(h)) {
+  if (ipVersion(h) !== 0 && !isPublicAddress(h)) {
     throw new BlockedAddressError(`Address ${h} is not a public address and is not fetched.`);
   }
 }
