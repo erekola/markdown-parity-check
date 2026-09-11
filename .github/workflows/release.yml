@@ -80,7 +80,10 @@ jobs:
             # version of a package is published by the maintainer, because a trusted publisher can only
             # be configured on an existing package.
             npm publish ".release/local/$TARBALL" --access public
-            node dist/tools/release-check.js --tarball ".release/local/$TARBALL" --name "$NAME" --version "$VERSION" --save ".release/registry/$TARBALL"
+            # npm may answer 404 for a few minutes while it processes the new version (the 0.2.0 run
+            # failed on that). Only that delay and temporary registry statuses are waited out, at most
+            # 20 attempts 15 s apart; a mismatch or any other error still stops the release at once.
+            node dist/tools/release-check.js --tarball ".release/local/$TARBALL" --name "$NAME" --version "$VERSION" --save ".release/registry/$TARBALL" --wait-for-publish --attempts 20 --interval-ms 15000
           elif [ "$CHECK" -ne 0 ]; then
             echo "release-check failed with exit $CHECK; not creating a tag or a release" >&2
             exit 1

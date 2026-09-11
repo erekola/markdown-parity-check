@@ -4,6 +4,8 @@
 //
 // Usage (from the repository root, after npm run build):
 //   node dist/tools/release-check.js --tarball <file.tgz> --name <pkg> --version <x.y.z> [--registry <url>] [--save <path>]
+//   After npm publish: add --wait-for-publish [--attempts <n>] [--interval-ms <ms>] to wait out npm's processing
+//   delay (default 20 attempts 15 s apart, capped at 40 attempts and 10 minutes); see waitForRelease.
 // Exit codes:
 //   0   the version exists on the registry, its integrity matches and its content equals the local tarball
 //   10  the version does not exist on the registry (HTTP 404); the local tarball may be published
@@ -19,11 +21,22 @@ export const EXIT_MISSING = 10;
 export const EXIT_MISMATCH = 1;
 
 export class ReleaseCheckError extends Error {
-  constructor(message: string) {
+  /** HTTP status of the registry response that caused the error, when there was one. */
+  httpStatus?: number;
+  constructor(message: string, httpStatus?: number) {
     super(message);
     this.name = 'ReleaseCheckError';
+    this.httpStatus = httpStatus;
   }
 }
+
+/** Registry statuses that mean "not available yet or right now", not "wrong". A 404 on the tarball is
+ * the same publish delay as a 404 on the version record. Everything else is a real error. */
+export const TEMPORARY_STATUSES: ReadonlySet<number> = new Set([404, 429, 502, 503, 504]);
+
+/** Hard caps of the wait after a publish, whatever the command line asks for. */
+export const MAX_WAIT_ATTEMPTS = 40;
+export const MAX_WAIT_TOTAL_MS = 10 * 60 * 1000;
 
 export interface RegistryVersion {
   tarball: string;
@@ -127,7 +140,7 @@ export async function fetchRegistryVersion(registry: string, name: string, versi
     throw new ReleaseCheckError(`Registry request failed for ${url}: ${(err as Error).message}`);
   }
   if (res.status === 404) return null;
-  if (res.status !== 200) throw new ReleaseCheckError(`Registry returned HTTP ${res.status} for ${url}; not treating this as a missing version.`);
+  if (res.status !== 200) throw new ReleaseCheckError(`Registry returned HTTP ${res.status} for ${url}; not treating this as a missing version.`, res.status);
   let data: { dist?: RegistryVersion; version?: string };
   try {
     data = JSON.parse(await res.text()) as { dist?: RegistryVersion; version?: string };
@@ -146,7 +159,7 @@ export async function downloadVerified(dist: RegistryVersion, fetchFn: FetchLike
   } catch (err) {
     throw new ReleaseCheckError(`Tarball download failed for ${dist.tarball}: ${(err as Error).message}`);
   }
-  if (res.status !== 200) throw new ReleaseCheckError(`Tarball download returned HTTP ${res.status} for ${dist.tarball}.`);
+  if (res.status !== 200) throw new ReleaseCheckError(`Tarball download returned HTTP ${res.status} for ${dist.tarball}.`, res.status);
   const buf = Buffer.from(await res.arrayBuffer());
   if (!dist.integrity && !dist.shasum) throw new ReleaseCheckError('Registry record has neither dist.integrity nor dist.shasum; cannot verify the tarball.');
   if (dist.integrity) {
@@ -176,23 +189,59 @@ export async function checkRelease(opts: { tarball: Buffer; name: string; versio
   return { code: EXIT_VERIFIED, message: `${opts.name}@${opts.version} verified: registry integrity ${dist.integrity ?? dist.shasum} matches and the tarball is ${identical} to the local one.`, registryTarball: remote };
 }
 
+export type SleepFn = (ms: number) => Promise<void>;
+
+const realSleep: SleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The check after `npm publish`. npm can accept a version and still answer 404 for a few minutes while it
+ * processes it ("Your package is being processed and may take a few minutes to become available"), and
+ * the 0.2.0 release failed on exactly that. This retries only a missing version and the temporary
+ * statuses in TEMPORARY_STATUSES, at most `attempts` times with `intervalMs` between them, both capped.
+ * A content mismatch, a wrong integrity or shasum, any other HTTP status, a response that is not JSON and
+ * a failed network request end the wait at once, as they would without it. A version that never appears
+ * ends as EXIT_MISMATCH with its own message, so the release stops instead of looking skipped.
+ */
+export async function waitForRelease(opts: { tarball: Buffer; name: string; version: string; registry: string; fetchFn: FetchLike; attempts: number; intervalMs: number; sleep?: SleepFn }): Promise<CheckResult & { attempts: number }> {
+  if (!Number.isInteger(opts.attempts) || opts.attempts < 1 || opts.attempts > MAX_WAIT_ATTEMPTS) throw new ReleaseCheckError(`--attempts must be an integer from 1 to ${MAX_WAIT_ATTEMPTS} (got ${opts.attempts}).`);
+  if (!Number.isInteger(opts.intervalMs) || opts.intervalMs < 0 || opts.intervalMs * (opts.attempts - 1) > MAX_WAIT_TOTAL_MS) throw new ReleaseCheckError(`--interval-ms times the attempts may not exceed ${MAX_WAIT_TOTAL_MS} ms of waiting (got ${opts.intervalMs} ms for ${opts.attempts} attempts).`);
+  const sleep = opts.sleep ?? realSleep;
+  let last = '';
+  for (let attempt = 1; attempt <= opts.attempts; attempt++) {
+    try {
+      const r = await checkRelease(opts);
+      if (r.code !== EXIT_MISSING) return { ...r, attempts: attempt };
+      last = r.message;
+    } catch (err) {
+      if (!(err instanceof ReleaseCheckError) || err.httpStatus === undefined || !TEMPORARY_STATUSES.has(err.httpStatus)) throw err;
+      last = err.message;
+    }
+    if (attempt < opts.attempts) await sleep(opts.intervalMs);
+  }
+  return { code: EXIT_MISMATCH, attempts: opts.attempts, message: `${opts.name}@${opts.version} is still not available on the registry after ${opts.attempts} attempts ${opts.intervalMs} ms apart; last answer: ${last}` };
+}
+
 function arg(argv: string[], key: string): string | undefined {
   const i = argv.indexOf(key);
   return i >= 0 ? argv[i + 1] : undefined;
 }
 
-export async function main(argv: string[], fetchFn: FetchLike = fetch as unknown as FetchLike): Promise<number> {
+export async function main(argv: string[], fetchFn: FetchLike = fetch as unknown as FetchLike, sleep: SleepFn = realSleep): Promise<number> {
   const tarballPath = arg(argv, '--tarball');
   const name = arg(argv, '--name');
   const version = arg(argv, '--version');
   const registry = arg(argv, '--registry') ?? 'https://registry.npmjs.org';
   const save = arg(argv, '--save');
+  const wait = argv.includes('--wait-for-publish');
   if (!tarballPath || !name || !version) {
-    process.stderr.write('Usage: release-check --tarball <file.tgz> --name <pkg> --version <x.y.z> [--registry <url>] [--save <path>]\n');
+    process.stderr.write('Usage: release-check --tarball <file.tgz> --name <pkg> --version <x.y.z> [--registry <url>] [--save <path>] [--wait-for-publish [--attempts <n>] [--interval-ms <ms>]]\n');
     return EXIT_MISMATCH;
   }
   try {
-    const result = await checkRelease({ tarball: fs.readFileSync(tarballPath), name, version, registry, fetchFn });
+    const tarball = fs.readFileSync(tarballPath);
+    const result = wait
+      ? await waitForRelease({ tarball, name, version, registry, fetchFn, sleep, attempts: Number(arg(argv, '--attempts') ?? '20'), intervalMs: Number(arg(argv, '--interval-ms') ?? '15000') })
+      : await checkRelease({ tarball, name, version, registry, fetchFn });
     process.stdout.write(`${result.message}\n`);
     if (result.code === EXIT_VERIFIED && save && result.registryTarball) {
       fs.writeFileSync(save, result.registryTarball);
