@@ -78,16 +78,35 @@ export function isPublicIPv4(ip: string): boolean {
   return true;
 }
 
+/**
+ * The dotted quad at the end of s, or null: what /(\d+\.\d+\.\d+\.\d+)$/ captured up to 0.2.1, found in one
+ * pass. That expression took time quadratic in a run of digits (CodeQL js/polynomial-redos), and
+ * isPublicIPv6 is exported, so a caller can hand it any string. Of the run of digits and dots at the end
+ * of s, the match is the last four dot-separated parts, when there are at least four and none is empty.
+ */
+function trailingDottedQuad(s: string): string | null {
+  let i = s.length;
+  while (i > 0) {
+    const c = s.charCodeAt(i - 1);
+    if ((c >= 0x30 && c <= 0x39) || c === 0x2e) i--;
+    else break;
+  }
+  const parts = s.slice(i).split('.');
+  if (parts.length < 4) return null;
+  const quad = parts.slice(-4);
+  return quad.every((p) => p !== '') ? quad.join('.') : null;
+}
+
 /** Expands an IPv6 address into 8 16-bit groups. Returns null when it cannot be parsed. */
 export function expandIPv6(ip: string): number[] | null {
   let s = ip.toLowerCase();
   const zone = s.indexOf('%');
   if (zone >= 0) s = s.slice(0, zone);
   // Embedded IPv4 tail, for example ::ffff:127.0.0.1.
-  const v4 = /(\d+\.\d+\.\d+\.\d+)$/.exec(s);
+  const v4 = trailingDottedQuad(s);
   if (v4) {
-    const n = ipv4ToInt(v4[1]!);
-    s = s.slice(0, -v4[1]!.length) + ((n >>> 16) & 0xffff).toString(16) + ':' + (n & 0xffff).toString(16);
+    const n = ipv4ToInt(v4);
+    s = s.slice(0, -v4.length) + ((n >>> 16) & 0xffff).toString(16) + ':' + (n & 0xffff).toString(16);
   }
   const halves = s.split('::');
   if (halves.length > 2) return null;

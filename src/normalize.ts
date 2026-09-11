@@ -55,16 +55,98 @@ export function excerpt(text: string, max = 80): string {
 
 // URL-like runs inside free text: absolute URLs, www. hosts, and root-relative paths that carry a query
 // or fragment. Only the query values and the fragment are rewritten; other text is left untouched.
-const URL_IN_TEXT = /(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"'()]+|www\.[^\s<>"'()]+|(?<![\w/])\/[^\s<>"'()]*[?#][^\s<>"'()]*|[^\s<>"'()]*\?[\w%.-]+=[^\s<>"'()]*)/giu;
+//
+// Up to 0.2.1 this was one regular expression, kept in test/linear.test.ts as the reference. Its time was
+// quadratic in the length of a run without whitespace (CodeQL js/polynomial-redos; 80 000 characters took
+// 4.2 s), and the text comes from the compared page. Every alternative of that expression ends where the
+// run of characters other than whitespace and < > " ' ( ) ends, so a run holds at most one match, and the
+// match starts at the leftmost position where any alternative can start. urlStart finds that position
+// with a few linear scans of the run, and the test compares the two on random input.
+const RUN = /[^\s<>"'()]+/gu;
+const TRAIL = '.,;:!?';
+
+// Character tests with the old expression's i and u flags, under which \w and [a-z] also match U+017F and
+// U+212A, because they case-fold to s and k.
+const isLetter = (c: number) => (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) || c === 0x17f || c === 0x212a;
+const isDigit = (c: number) => c >= 0x30 && c <= 0x39;
+const isWord = (c: number) => isLetter(c) || isDigit(c) || c === 0x5f;
+const isSchemeChar = (c: number) => isLetter(c) || isDigit(c) || c === 0x2b || c === 0x2e || c === 0x2d; // [a-z0-9+.-]
+const isParamChar = (c: number) => isWord(c) || c === 0x25 || c === 0x2e || c === 0x2d; // [\w%.-]
+const isW = (c: number) => c === 0x57 || c === 0x77;
+
+/** Start of the URL-like match in the run t[s, e), or -1 when the run holds none. */
+function urlStart(t: string, s: number, e: number): number {
+  // [^\s<>"'()]*\?[\w%.-]+=  A query parameter anywhere in the run makes the whole run the match.
+  for (let q = s; q < e; q++) {
+    if (t.charCodeAt(q) !== 0x3f) continue;
+    let k = q + 1;
+    while (k < e && isParamChar(t.charCodeAt(k))) k++;
+    if (k > q + 1 && k < e && t.charCodeAt(k) === 0x3d) return s;
+    q = k - 1;
+  }
+  let best = -1;
+  // [a-z][a-z0-9+.-]*:\/\/[^\s<>"'()]+  The first letter of a scheme run that is followed by :// and at
+  // least one more character.
+  for (let j = s; j < e; ) {
+    if (!isSchemeChar(t.charCodeAt(j))) {
+      j++;
+      continue;
+    }
+    let letter = -1;
+    let b = j;
+    while (b < e && isSchemeChar(t.charCodeAt(b))) {
+      if (letter < 0 && isLetter(t.charCodeAt(b))) letter = b;
+      b++;
+    }
+    if (letter >= 0 && b + 3 < e && t.startsWith('://', b)) {
+      best = letter;
+      break;
+    }
+    j = b;
+  }
+  // www\.[^\s<>"'()]+
+  for (let p = s; p + 4 < e && (best < 0 || p < best); p++) {
+    if (isW(t.charCodeAt(p)) && isW(t.charCodeAt(p + 1)) && isW(t.charCodeAt(p + 2)) && t.charCodeAt(p + 3) === 0x2e) {
+      best = p;
+      break;
+    }
+  }
+  // (?<![\w/])\/[^\s<>"'()]*[?#][^\s<>"'()]*  The first '/' that does not follow a word character or '/',
+  // when a '?' or '#' comes after it in the run.
+  let lastQueryOrHash = -1;
+  for (let r = e - 1; r > s; r--) {
+    const c = t.charCodeAt(r);
+    if (c === 0x3f || c === 0x23) {
+      lastQueryOrHash = r;
+      break;
+    }
+  }
+  for (let p = s; p < lastQueryOrHash && (best < 0 || p < best); p++) {
+    if (t.charCodeAt(p) !== 0x2f) continue;
+    const before = p > 0 ? t.charCodeAt(p - 1) : -1;
+    if (before === 0x2f || isWord(before)) continue;
+    best = p;
+    break;
+  }
+  return best;
+}
 
 /** Masks query values and fragments of every URL-like run in a piece of report text. */
 export function redactText(text: string): string {
-  return text.replace(URL_IN_TEXT, (m) => {
+  let out = '';
+  let done = 0;
+  for (const run of text.matchAll(RUN)) {
+    const s = run.index!;
+    const e = s + run[0].length;
+    const p = urlStart(text, s, e);
+    if (p < 0) continue;
     // Keep trailing sentence punctuation outside the URL.
-    const trail = /[.,;:!?]+$/.exec(m)?.[0] ?? '';
-    const core = m.slice(0, m.length - trail.length);
-    return maskHref(core) + trail;
-  });
+    let end = e;
+    while (end > p && TRAIL.includes(text[end - 1]!)) end--;
+    out += text.slice(done, p) + maskHref(text.slice(p, end)) + text.slice(end, e);
+    done = e;
+  }
+  return out + text.slice(done);
 }
 
 /** Resolves a possibly relative href against a base. Returns null when it cannot be resolved. */
