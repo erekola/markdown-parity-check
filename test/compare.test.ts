@@ -113,6 +113,28 @@ describe('links', () => {
     assert.equal(unverified[0]?.severity, 'warning');
     assert.equal(unverified[0]?.before, '../docs/spec');
   });
+  it('classifies two relative forms without a base by what any base could make of them', () => {
+    const run = (h: string, m: string) => compare(extractHtml(`<main><p><a href="${h}">l</a></p></main>`), extractMarkdown(`[l](${m})\n`));
+    // The same address under every base: no finding.
+    for (const [h, m] of [['./guide', 'guide'], ['a/../guide', 'guide'], ['guide/./x', 'guide/x']] as const) {
+      assert.deepEqual(run(h, m).findings, [], `${h} vs ${m}`);
+    }
+    // Different under every base: still an error, with the differing part named.
+    for (const [h, m, part] of [['guide', 'other', 'path or host'], ['/x', '/y', 'path or host'], ['guide?a=1', 'guide?a=2', 'query'], ['guide#one', 'guide#two', 'fragment']] as const) {
+      const r = run(h, m);
+      assert.deepEqual(codes(r.findings), ['LINK_TARGET_CHANGED'], `${h} vs ${m}`);
+      assert.equal(r.findings[0]?.severity, 'error');
+      assert.ok((r.findings[0]?.message ?? '').includes(`(${part} differs)`), r.findings[0]?.message);
+    }
+    // Equal under some bases and not others: a warning, never an error or silence.
+    // ../d//.. climbs above its start and descends into a segment named d, so it reuses the base's own
+    // segment names: a check that tries one set of names can see it equal to . when it is not.
+    for (const [h, m] of [['../guide', 'guide'], ['/docs/guide', 'guide'], ['?q=1', './?q=1'], ['//base.invalid/x', '/x'], ['../d//..', '.'], ['./?q', '../d//..?q'], ['%2e%2e/d//%2e%2e', '.'], ['../e/..', '.']] as const) {
+      const r = run(h, m);
+      assert.deepEqual(codes(r.findings), ['LINK_UNVERIFIED'], `${h} vs ${m}`);
+      assert.equal(r.findings[0]?.severity, 'warning');
+    }
+  });
 });
 
 describe('duplicates and order', () => {

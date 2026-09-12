@@ -22,15 +22,15 @@ export interface Location {
 
 export interface Block {
   type: BlockType;
-  /** Strictly normalized comparison text (case and content characters preserved). */
+  /** Comparison text after strictNormalize: case kept, NFC applied, ZERO_WIDTH characters removed, whitespace collapsed. */
   text: string;
-  /** Loosely normalized text used only for alignment. */
+  /** Loosely normalized text, used for alignment and to classify minor text differences. */
   loose: string;
   /** Heading depth 1..6 for headings. */
   depth?: number;
   /** Table cells row by row, strictly normalized. Only for type 'table'. */
   cells?: string[][];
-  /** Raw code content with whitespace preserved. Only for type 'code'. */
+  /** Code content after normalizeCode: line endings normalized to LF and trailing newlines removed. Only for type 'code'. */
   code?: string;
   links: Link[];
   numbers: string[];

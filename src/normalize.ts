@@ -1,5 +1,6 @@
-// Text normalization. Strict normalization preserves case and content characters; loose normalization is
-// used only as an alignment aid.
+// Text normalization. Strict normalization preserves case, applies NFC, removes the characters in ZERO_WIDTH,
+// maps the spaces in NBSP to a plain space and collapses whitespace. Loose normalization aligns blocks and
+// classifies minor text differences (TEXT_MINOR_CHANGED).
 
 const NBSP = /[\u00a0\u2007\u202f]/g;
 const WS = /[ \t\r\n\f\v]+/g;
@@ -27,7 +28,7 @@ export function looseNormalize(text: string): string {
     .trim();
 }
 
-/** Code content: normalize line endings and strip a trailing newline only. */
+/** Code content: CRLF and CR line endings become LF and every trailing newline is removed; other whitespace is kept. */
 export function normalizeCode(code: string): string {
   return code.replace(/\r\n?/g, '\n').replace(/\n+$/, '');
 }
@@ -217,4 +218,58 @@ export function hrefDifference(a: string, b: string): string {
   if (x.query !== y.query) parts.push('query');
   if (x.hash !== y.hash) parts.push('fragment');
   return parts.length ? parts.join(', ') : 'nothing visible';
+}
+
+export type HrefRelation = 'same' | 'different' | 'uncertain';
+
+/**
+ * How two references relate when neither could be resolved, which is the case for two relative
+ * links and no base URL. A textual difference alone does not make two targets different: ./guide
+ * and guide are the same address under every base.
+ *
+ * 'same': the two resolve equal under synthetic bases that cover every way a base takes part in
+ * resolution, so they are equal under any base. The bases are two origins with different schemes, and
+ * for each, two sets of names that share none (directory segment, file and query), each used as a
+ * directory, a file and a file with a query, all deeper than any ".." segment in either reference. Two
+ * name sets are needed because a reference that climbs above its start and descends again, such as
+ * ../d//.., reuses the base's own segment names: under one set it can equal a different reference
+ * (found by an independent property test 2026-09-12 before 0.2.6 was released).
+ * 'different': the difference cannot depend on the base, because both are network-path references,
+ * both are absolute-path references, or both are relative-path references with a non-empty path and
+ * no ".." segment. 'uncertain': anything else, because some base could make the two meet
+ * (../guide and guide are equal at the root, ?q and ./?q under a directory base).
+ */
+export function relativeHrefRelation(a: string, b: string): HrefRelation {
+  const x = a.trim();
+  const y = b.trim();
+  if (x === y) return 'same';
+  const pathOf = (h: string) => h.replace(/\\/g, '/').split(/[?#]/, 1)[0] ?? '';
+  const dotDots = (h: string) => pathOf(h).split('/').filter((s) => /^(?:\.|%2e){2}$/i.test(s)).length;
+  const depth = Math.max(dotDots(x), dotDots(y)) + 1;
+  const bases: string[] = [];
+  for (const origin of ['https://base.invalid/', 'http://other.invalid/']) {
+    for (const [segment, file, query] of [['d', 'f', '?q'], ['e', 'g', '?r']] as const) {
+      const dir = origin + `${segment}/`.repeat(depth);
+      bases.push(dir, dir + file, dir + file + query);
+    }
+  }
+  const resolveAll = (h: string): string | null => {
+    try {
+      return bases.map((base) => new URL(h, base).href).join(' ');
+    } catch {
+      return null;
+    }
+  };
+  const rx = resolveAll(x);
+  const ry = resolveAll(y);
+  if (rx === null || ry === null) return 'different';
+  if (rx === ry) return 'same';
+  const kind = (h: string) => {
+    const p = h.replace(/\\/g, '/');
+    if (p.startsWith('//')) return 'network';
+    if (p.startsWith('/')) return 'absolute';
+    return pathOf(h) !== '' && dotDots(h) === 0 ? 'relative' : 'base-dependent';
+  };
+  const kx = kind(x);
+  return kx !== 'base-dependent' && kx === kind(y) ? 'different' : 'uncertain';
 }

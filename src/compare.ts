@@ -2,7 +2,7 @@
 
 import { align, UNCERTAIN_THRESHOLD, type AlignmentLimits, type Pair } from './align.js';
 import type { Block, Extraction, Finding, FindingSide, Link } from './model.js';
-import { excerpt, hrefDifference, maskHref, redactText } from './normalize.js';
+import { excerpt, hrefDifference, maskHref, redactText, relativeHrefRelation } from './normalize.js';
 
 export interface Coverage {
   htmlBlocks: number;
@@ -71,8 +71,12 @@ function compareLinks(out: Finding[], h: Block, m: Block, bothBases: boolean): v
     if (hl.resolved !== null && ml.resolved !== null) {
       const diff = hrefDifference(hl.resolved, ml.resolved);
       out.push({ code: 'LINK_TARGET_CHANGED', severity: 'error', direction: 'both', message: `Link "${redactText(hl.text)}" points to a different target (${diff} differs).`, html: side(h), markdown: side(m), before: maskHref(hl.resolved), after: maskHref(ml.resolved) });
+    } else if (hl.resolved === null && ml.resolved === null && relativeHrefRelation(hl.rawHref, ml.rawHref) === 'uncertain') {
+      // Neither side resolved and no base could be ruled out as making them meet. A textual difference
+      // alone does not establish different destinations, so this is a warning and not an error.
+      out.push({ code: 'LINK_UNVERIFIED', severity: 'warning', direction: 'both', message: `Link "${redactText(hl.text)}" differs textually and no base URL is known, so the two relative forms cannot be confirmed equal or different.`, html: side(h), markdown: side(m), before: maskHref(hl.rawHref), after: maskHref(ml.rawHref) });
     } else if (hl.resolved === null && ml.resolved === null) {
-      // Both relative and textually different: they differ under any common base.
+      // Neither side resolved, and relativeHrefRelation found a difference no base can remove.
       const diff = hrefDifference(hl.rawHref, ml.rawHref);
       out.push({ code: 'LINK_TARGET_CHANGED', severity: 'error', direction: 'both', message: `Link "${redactText(hl.text)}" points to a different relative target (${diff} differs).`, html: side(h), markdown: side(m), before: maskHref(hl.rawHref), after: maskHref(ml.rawHref) });
     } else {
@@ -86,6 +90,7 @@ function compareLinks(out: Finding[], h: Block, m: Block, bothBases: boolean): v
 
 function sameTarget(a: Link, b: Link): boolean {
   if (a.resolved !== null && b.resolved !== null) return a.resolved === b.resolved;
+  if (a.resolved === null && b.resolved === null) return relativeHrefRelation(a.rawHref, b.rawHref) === 'same';
   return a.rawHref.trim() === b.rawHref.trim();
 }
 

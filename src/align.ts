@@ -1,7 +1,8 @@
 // Block alignment between the HTML block list (A) and the Markdown block list (B).
 // 1. Exact matches in order (LCS over strict keys) preserve duplicates and order.
 // 2. Remaining exact-key blocks are paired as moved blocks (order changed).
-// 3. Remaining blocks of the same type are paired by loose-key equality, then by token similarity.
+// 3. Remaining blocks in the same typeGroup (paragraphs and list items share one) are paired by loose-key
+//    equality, then by token similarity.
 // Everything left is missing (HTML only) or added (Markdown only).
 
 import type { Block } from './model.js';
@@ -207,9 +208,10 @@ export function align(a: Block[], b: Block[], limits?: Partial<AlignmentLimits>)
     }
   }
 
-  // Similar pairs: greedy best-match by similarity above the threshold, same type only. Ties are broken
-  // by document order to keep results deterministic. Token counts are computed once per block, and the
-  // candidate list is bounded by MAX_SIMILARITY_CANDIDATES.
+  // Similar pairs: greedy best match by similarity within the same typeGroup, keeping scores at or above
+  // SIMILARITY_THRESHOLD. Ties are broken by document order to keep results deterministic. Token counts are
+  // computed once per block, and the candidate list is bounded by the configured maxSimilarityCandidates
+  // (MAX_SIMILARITY_CANDIDATES by default).
   const freeA: number[] = [];
   const freeBs: number[] = [];
   for (let i = 0; i < a.length; i++) if (!usedA.has(i)) freeA.push(i);
