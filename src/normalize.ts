@@ -18,7 +18,7 @@ export function strictNormalize(text: string): string {
 export function looseNormalize(text: string): string {
   return strictNormalize(text)
     .toLowerCase()
-    // Map typographic quotes and dashes to plain forms for alignment only.
+    // Map typographic quotes and dashes to plain forms, for alignment and for classifying minor text differences.
     .replace(/[\u2018\u2019\u201a\u2032]/g, "'")
     .replace(/[\u201c\u201d\u201e\u2033]/g, '"')
     .replace(/[\u2010-\u2015\u2212]/g, '-')
@@ -223,12 +223,27 @@ export function hrefDifference(a: string, b: string): string {
 export type HrefRelation = 'same' | 'different' | 'uncertain';
 
 /**
+ * The string the URL parser actually reads (WHATWG URL, basic URL parser): leading and trailing C0 controls
+ * and spaces are removed, and so is every ASCII tab and newline wherever it is. ".\t./guide" is "../guide" to
+ * the parser, so counting ".." segments in the raw text found none where the parser climbs one (found by an
+ * outside review, 2026-09-12).
+ */
+function urlParserInput(href: string): string {
+  let start = 0;
+  let end = href.length;
+  while (start < end && href.charCodeAt(start) <= 0x20) start++;
+  while (end > start && href.charCodeAt(end - 1) <= 0x20) end--;
+  return href.slice(start, end).replace(/[\t\n\r]/g, '');
+}
+
+/**
  * How two references relate when neither could be resolved, which is the case for two relative
  * links and no base URL. A textual difference alone does not make two targets different: ./guide
- * and guide are the same address under every base.
+ * and guide are the same address under every base. Both references are first reduced to the string the URL
+ * parser reads (urlParserInput), so the segment counts and the kinds below describe what is resolved.
  *
  * 'same': the two resolve equal under synthetic bases that cover every way a base takes part in
- * resolution, so they are equal under any base. The bases are two origins with different schemes, and
+ * resolution, so they are equal under any http or https base, which is the kind of base a web page has. The bases are two origins with different schemes, and
  * for each, two sets of names that share none (directory segment, file and query), each used as a
  * directory, a file and a file with a query, all deeper than any ".." segment in either reference. Two
  * name sets are needed because a reference that climbs above its start and descends again, such as
@@ -240,8 +255,8 @@ export type HrefRelation = 'same' | 'different' | 'uncertain';
  * (../guide and guide are equal at the root, ?q and ./?q under a directory base).
  */
 export function relativeHrefRelation(a: string, b: string): HrefRelation {
-  const x = a.trim();
-  const y = b.trim();
+  const x = urlParserInput(a);
+  const y = urlParserInput(b);
   if (x === y) return 'same';
   const pathOf = (h: string) => h.replace(/\\/g, '/').split(/[?#]/, 1)[0] ?? '';
   const dotDots = (h: string) => pathOf(h).split('/').filter((s) => /^(?:\.|%2e){2}$/i.test(s)).length;

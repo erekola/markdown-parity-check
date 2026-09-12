@@ -1,6 +1,6 @@
 {
   "name": "markdown-parity-check",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Compares the main content of a web page's HTML and Markdown representations and reports concrete differences.",
   "keywords": [
     "markdown",

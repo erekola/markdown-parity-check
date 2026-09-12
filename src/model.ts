@@ -5,7 +5,7 @@ export type BlockType = 'heading' | 'paragraph' | 'listItem' | 'table' | 'code';
 export interface Link {
   /** Visible anchor text, strictly normalized. */
   text: string;
-  /** Href exactly as written in the source. */
+  /** Href as the parser returned it, with character references decoded, before resolution against a base URL. */
   rawHref: string;
   /** Href resolved against the document base, or null when it could not be resolved. */
   resolved: string | null;

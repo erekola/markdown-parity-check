@@ -135,6 +135,22 @@ describe('links', () => {
       assert.equal(r.findings[0]?.severity, 'warning');
     }
   });
+  it('counts ".." segments in the string the URL parser reads, after tabs and newlines are removed', () => {
+    // An HTML attribute can carry a tab, LF or CR as a character reference, and the URL parser drops all three
+    // before it resolves. Each pair below is equal under one base and different under another, so with no base
+    // the only right answer is a warning (outside review, 2026-09-12).
+    const run = (h: string, m: string, base: string | null = null) =>
+      compare(extractHtml(`<main><p><a href="${h}">l</a></p></main>`, { baseUrl: base }), extractMarkdown(`<a href="${m}">l</a>\n`, { baseUrl: base }), { bothBases: base !== null });
+    for (const c of ['&#9;', '&#10;', '&#13;']) {
+      assert.deepEqual(codes(run(`.${c}./.${c}./guide`, `.${c}./.${c}./.${c}./guide`).findings), ['LINK_UNVERIFIED'], c);
+      assert.deepEqual(codes(run(`.${c}./guide`, 'guide').findings), ['LINK_UNVERIFIED'], c);
+    }
+    // With a base the resolved addresses decide, in both directions.
+    assert.deepEqual(codes(run('.&#9;./.&#9;./guide', '.&#9;./.&#9;./.&#9;./guide', 'https://example.com/a/b/c/d/').findings), ['LINK_TARGET_CHANGED']);
+    assert.deepEqual(run('.&#9;./guide', 'guide', 'https://example.com/').findings, []);
+    // The case 0.2.6 fixed stays silent.
+    assert.deepEqual(run('./guide', 'guide').findings, []);
+  });
 });
 
 describe('duplicates and order', () => {
