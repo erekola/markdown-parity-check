@@ -4,7 +4,7 @@ Compare the main content of a page's HTML and Markdown versions. The report list
 
 ## Try it in the browser
 
-The [hosted Markdown parity check](https://turva.dev/markdown-parity-check) runs this comparison on turva.dev. It currently checks the published pages of turva.dev only. An address on any other site is refused with a message that points to the command-line tool below.
+The [hosted Markdown parity check](https://turva.dev/markdown-parity-check) runs this comparison on turva.dev. It currently checks the published pages of turva.dev only, and the page states that limit in its opening paragraph and again at the address field. An address on any other site is refused with a message that points to the command-line tool below. Fill in an example puts turva.dev's own tools page in the address field, and Check runs the comparison as a separate step.
 
 ## Check your own site
 
@@ -83,7 +83,7 @@ Both use the comparison core of this package. They differ in which pages they re
 
 The hosted page also answers a JSON POST, described on the page. It runs the release of this package pinned in [turva-worker](https://github.com/erekola/turva-worker), which can be older than the latest npm release. The report's `toolVersion` field shows which release produced it.
 
-A hosted check can fail on turva.dev's own pages as well. On 2026-09-11 the check of https://turva.dev/tools returned `fail` with five errors. The Markdown carries a Related heading and four links that the HTML page leaves out, and the report listed each of them.
+A hosted check can fail on turva.dev's own pages as well. On 2026-09-11 the check of https://turva.dev/tools returned `fail` with five errors. The Markdown carries a Related heading and four links that the HTML page does not repeat as a list, and the report listed each of them. The same four targets are links inside that page's tool cards, so the report found a missing structure and not missing content. [HTML and Markdown can disagree](https://turva.dev/blog/html-and-markdown-can-disagree) reads that result in full.
 
 ## Library use
 
