@@ -97,4 +97,26 @@ describe('opt-in Starlight extraction', () => {
   it('preserves the nesting limit with the Starlight profile', () => {
     assert.throws(() => extractHtml('<main><div><p>Text</p></div></main>', { profile: 'starlight', maxDepth: 2 }), /nesting depth/);
   });
+  it('keeps a tab and panel pair inside a hidden, noscript or aria-hidden wrapper hidden', () => {
+    const pair = '<ul role="tablist"><li><a role="tab" id="t3" href="#p3">draft</a></li></ul><div role="tabpanel" id="p3" aria-labelledby="t3" hidden><p>Hidden draft</p></div>';
+    const withDraft = tabMd + '\n\n* draft\n\n  Hidden draft';
+    for (const [open, close] of [['<div hidden>', '</div>'], ['<noscript>', '</noscript>'], ['<div aria-hidden="true">', '</div>']] as const) {
+      const html = tabHtml.replace('</starlight-tabs>', `${open}${pair}${close}</starlight-tabs>`);
+      assert.equal(compare(html, tabMd).summary.exitCode, 0, open);
+      assert.equal(compare(html, withDraft).summary.exitCode, 1, open);
+    }
+  });
+  it('refuses a panel that is not a direct child of the tabs component', () => {
+    for (const open of ['<div>', '<div aria-hidden="true">']) {
+      const html = tabHtml.replace('<div role="tabpanel" id="p2"', `${open}<div role="tabpanel" id="p2"`).replace('</starlight-tabs>', '</div></starlight-tabs>');
+      assert.throws(() => compare(html, tabMd), RunError, open);
+    }
+  });
+  it('reads Expressive Code lines beside a line-number gutter without the numbers', () => {
+    const numbered = (lines: string[]) => ec(lines).split('<div class="ec-line">').join('<div class="ec-line"><div class="gutter"><div class="ln" aria-hidden="true">9</div></div>');
+    assert.equal(compare(numbered(['echo one', 'echo two']), '```sh\necho one\necho two\n```').summary.exitCode, 0);
+    assert.equal(compare(numbered(['echo one', 'echo two']), '```sh\necho one\necho 2\n```').summary.exitCode, 1);
+    const other = ec(['echo one']).replace('<div class="ec-line">', '<div class="ec-line"><div class="marker">X</div>');
+    assert.equal(compare(other, '```sh\necho one\n```').summary.exitCode, 1);
+  });
 });

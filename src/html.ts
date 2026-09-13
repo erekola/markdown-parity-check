@@ -108,11 +108,11 @@ function ancestor(el: Element, predicate: (node: Element) => boolean): Element |
   return null;
 }
 
-function isSkipped(el: Element, root: Element, profile: 'generic' | 'starlight' = 'generic'): boolean {
+function isSkipped(el: Element, root: Element, profile: 'generic' | 'starlight' = 'generic', ignoreHidden = false): boolean {
   if (SKIP_TAGS.has(el.name)) return true;
   const role = (el.attribs['role'] ?? '').toLowerCase();
   if (SKIP_ROLES.has(role)) return true;
-  if (el.attribs['hidden'] !== undefined) return true;
+  if (el.attribs['hidden'] !== undefined && !ignoreHidden) return true;
   const asideTitle = profile === 'starlight' && el.name === 'p' && hasClass(el, 'starlight-aside__title')
     && el.parent instanceof Element && el.parent.name === 'aside' && hasClass(el.parent, 'starlight-aside');
   if (el.attribs['aria-hidden'] === 'true' && !asideTitle) return true;
@@ -293,14 +293,26 @@ function starlightCode(pre: Element): string {
   if (!(code instanceof Element) || code.name !== 'code') return textContent(pre);
   const lines = code.children.filter((node) => !(node instanceof Text && !node.data.trim()));
   if (lines.length === 0 || !lines.every((node) => node instanceof Element && node.name === 'div' && hasClass(node, 'ec-line'))) return textContent(pre);
-  return lines.map((line) => textContent(line)).join('\n');
+  // A gutter (line numbers from a plugin) sits beside the code as a direct child of the line; it is not code text.
+  const gutter = (node: ChildNode) => node instanceof Element && node.name === 'div' && hasClass(node, 'gutter');
+  return lines.map((line) => textContent((line as Element).children.filter((node) => !gutter(node)))).join('\n');
 }
 
 /** Starlight's Markdown exporter represents every tab as a labelled list item, including inactive panels. */
 function handleStarlightTabs(ctx: Ctx, component: Element): void {
+  // A tab counts only when nothing between it and the component hides it. A panel counts only as a direct child of
+  // the component, the structure Starlight itself queries (':scope > [role="tabpanel"]'). A tab or panel inside a
+  // hidden, aria-hidden or otherwise skipped wrapper stays hidden like any other content.
+  const shown = (node: Element): boolean => {
+    for (let cur: ParentNode | null = node; cur instanceof Element && cur !== component; cur = cur.parent) {
+      if (isSkipped(cur, ctx.root, ctx.profile)) return false;
+    }
+    return true;
+  };
   const own = (node: Element) => ancestor(node, (parent) => parent.name === 'starlight-tabs') === component;
-  const tabs = selectAll('[role="tab"]', component).filter(own);
-  const panels = selectAll('[role="tabpanel"]', component).filter(own);
+  const tabs = selectAll('[role="tab"]', component).filter((node) => own(node) && shown(node));
+  const panels = component.children.filter((node): node is Element => node instanceof Element && node.attribs.role === 'tabpanel'
+    && !isSkipped(node, ctx.root, ctx.profile, true));
   if (!tabs.length || tabs.length !== panels.length) throw new HtmlExtractError('Starlight tabs need one panel per tab.');
   const panelById = new Map<string, Element>();
   for (const panel of panels) {
