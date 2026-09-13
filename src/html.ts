@@ -9,6 +9,8 @@ import type { Block, Extraction, Link } from './model.js';
 import { extractNumbers, looseNormalize, normalizeCode, resolveHref, strictNormalize } from './normalize.js';
 
 export interface HtmlExtractOptions {
+  /** Opt-in component semantics. The default keeps generic HTML visibility rules. */
+  profile?: 'generic' | 'starlight';
   /** User supplied CSS selector for the main content. */
   selector?: string;
   /** Base URL for resolving relative links; a <base href> in the document takes precedence. */
@@ -44,6 +46,7 @@ const BLOCK_TAGS = new Set(['address', 'article', 'aside', 'blockquote', 'detail
 const HEADING_RE = /^h([1-6])$/;
 
 interface Ctx {
+  profile: 'generic' | 'starlight';
   base: string | null;
   source: string;
   lineStarts: number[];
@@ -92,11 +95,31 @@ function hasLaterSameNamedSibling(el: Element): boolean {
   return false;
 }
 
-function isSkipped(el: Element, root: Element): boolean {
+function hasClass(el: Element, name: string): boolean {
+  return (el.attribs.class ?? '').split(/\s+/).includes(name);
+}
+
+function ancestor(el: Element, predicate: (node: Element) => boolean): Element | null {
+  let parent = el.parent;
+  while (parent instanceof Element) {
+    if (predicate(parent)) return parent;
+    parent = parent.parent;
+  }
+  return null;
+}
+
+function isSkipped(el: Element, root: Element, profile: 'generic' | 'starlight' = 'generic'): boolean {
   if (SKIP_TAGS.has(el.name)) return true;
   const role = (el.attribs['role'] ?? '').toLowerCase();
   if (SKIP_ROLES.has(role)) return true;
-  if (el.attribs['hidden'] !== undefined || el.attribs['aria-hidden'] === 'true') return true;
+  if (el.attribs['hidden'] !== undefined) return true;
+  const asideTitle = profile === 'starlight' && el.name === 'p' && hasClass(el, 'starlight-aside__title')
+    && el.parent instanceof Element && el.parent.name === 'aside' && hasClass(el.parent, 'starlight-aside');
+  if (el.attribs['aria-hidden'] === 'true' && !asideTitle) return true;
+  // Expressive Code's terminal-frame label is UI text, not source code or a filename.
+  if (profile === 'starlight' && el.name === 'span' && hasClass(el, 'sr-only')
+    && el.parent instanceof Element && el.parent.name === 'figcaption'
+    && ancestor(el, (node) => hasClass(node, 'expressive-code'))) return true;
   // header/footer are page chrome only when they sit directly under body (or the html root), not inside an
   // article, where they usually carry metadata that belongs to the content.
   if ((el.name === 'header' || el.name === 'footer') && el.parent instanceof Element && (el.parent.name === 'body' || el.parent.name === 'html')) {
@@ -123,7 +146,7 @@ function inlineText(ctx: Ctx, node: ChildNode, run: InlineRun): void {
     return;
   }
   if (!(node instanceof Element)) return;
-  if (isSkipped(node, ctx.root)) return;
+  if (isSkipped(node, ctx.root, ctx.profile)) return;
   if (run.firstNode === null) run.firstNode = node;
   if (node.name === 'br') {
     run.text += ' ';
@@ -173,8 +196,8 @@ function walk(ctx: Ctx, el: Element): void {
   // A container: inline runs between block children become paragraphs; block children recurse.
   let run = newRun();
   for (const child of el.children) {
-    if (child instanceof Element && isSkipped(child, ctx.root)) continue;
-    if (child instanceof Element && BLOCK_TAGS.has(child.name)) {
+    if (child instanceof Element && isSkipped(child, ctx.root, ctx.profile)) continue;
+    if (child instanceof Element && (BLOCK_TAGS.has(child.name) || (ctx.profile === 'starlight' && child.name === 'starlight-tabs'))) {
       flushRun(ctx, run, el);
       run = newRun();
       handleBlock(ctx, child);
@@ -186,6 +209,10 @@ function walk(ctx: Ctx, el: Element): void {
 }
 
 function handleBlock(ctx: Ctx, el: Element): void {
+  if (ctx.profile === 'starlight' && el.name === 'starlight-tabs') {
+    handleStarlightTabs(ctx, el);
+    return;
+  }
   const m = HEADING_RE.exec(el.name);
   if (m) {
     const run = newRun();
@@ -205,7 +232,7 @@ function handleBlock(ctx: Ctx, el: Element): void {
     return;
   }
   if (el.name === 'pre') {
-    const code = normalizeCode(textContent(el));
+    const code = normalizeCode(ctx.profile === 'starlight' ? starlightCode(el) : textContent(el));
     if (code.trim() !== '') pushBlock(ctx, { type: 'code', text: strictNormalize(code), code, links: [] }, el, el);
     return;
   }
@@ -235,8 +262,8 @@ function handleListItem(ctx: Ctx, li: Element): void {
   let run = newRun();
   let ownFlushed = false;
   for (const child of li.children) {
-    if (child instanceof Element && isSkipped(child, ctx.root)) continue;
-    if (child instanceof Element && BLOCK_TAGS.has(child.name)) {
+    if (child instanceof Element && isSkipped(child, ctx.root, ctx.profile)) continue;
+    if (child instanceof Element && (BLOCK_TAGS.has(child.name) || (ctx.profile === 'starlight' && child.name === 'starlight-tabs'))) {
       if (!ownFlushed && child.name === 'p' && !hasBlockChild(child) && strictNormalize(run.text) === '') {
         for (const c of child.children) inlineText(ctx, c, run);
         if (run.firstNode === null) run.firstNode = child;
@@ -256,6 +283,60 @@ function handleListItem(ctx: Ctx, li: Element): void {
     }
   }
   flushRun(ctx, run, li, ownFlushed ? 'paragraph' : 'listItem');
+}
+
+/** Read only recognized direct line wrappers; never discard extra non-whitespace code children. */
+function starlightCode(pre: Element): string {
+  if (!ancestor(pre, (node) => hasClass(node, 'expressive-code'))) return textContent(pre);
+  const meaningful = pre.children.filter((node) => !(node instanceof Text && !node.data.trim()));
+  const code = meaningful.length === 1 ? meaningful[0] : null;
+  if (!(code instanceof Element) || code.name !== 'code') return textContent(pre);
+  const lines = code.children.filter((node) => !(node instanceof Text && !node.data.trim()));
+  if (lines.length === 0 || !lines.every((node) => node instanceof Element && node.name === 'div' && hasClass(node, 'ec-line'))) return textContent(pre);
+  return lines.map((line) => textContent(line)).join('\n');
+}
+
+/** Starlight's Markdown exporter represents every tab as a labelled list item, including inactive panels. */
+function handleStarlightTabs(ctx: Ctx, component: Element): void {
+  const own = (node: Element) => ancestor(node, (parent) => parent.name === 'starlight-tabs') === component;
+  const tabs = selectAll('[role="tab"]', component).filter(own);
+  const panels = selectAll('[role="tabpanel"]', component).filter(own);
+  if (!tabs.length || tabs.length !== panels.length) throw new HtmlExtractError('Starlight tabs need one panel per tab.');
+  const panelById = new Map<string, Element>();
+  for (const panel of panels) {
+    const id = panel.attribs.id;
+    if (!id || panelById.has(id)) throw new HtmlExtractError('Starlight panel identifiers are missing or ambiguous.');
+    panelById.set(id, panel);
+  }
+  const controlNodes = new Set<Element>([...tabs, ...panels]);
+  // Unknown content beside the tab controls/panels must not disappear from the comparison.
+  const validateWrapper = (node: ChildNode): void => {
+    if (node instanceof Text) {
+      if (node.data.trim()) throw new HtmlExtractError('Unexpected text outside Starlight tab labels and panels.');
+      return;
+    }
+    if (!(node instanceof Element) || controlNodes.has(node)) return;
+    if (isSkipped(node, ctx.root, ctx.profile)) return;
+    for (const child of node.children) validateWrapper(child);
+  };
+  for (const child of component.children) validateWrapper(child);
+  const used = new Set<Element>();
+  const ids = new Set<string>();
+  for (const tab of tabs) {
+    const id = tab.attribs.id;
+    const target = tab.attribs['aria-controls'] ?? (tab.attribs.href?.startsWith('#') ? tab.attribs.href.slice(1) : undefined);
+    if (!id || ids.has(id) || !target) throw new HtmlExtractError('Starlight tab identifiers are missing or ambiguous.');
+    ids.add(id);
+    const panel = panelById.get(target);
+    if (!panel || panel.attribs['aria-labelledby'] !== id || used.has(panel)) throw new HtmlExtractError('Starlight tab/panel association is missing or ambiguous.');
+    used.add(panel);
+    // Only the associated panel's initial visibility is bypassed. Hidden descendants remain hidden.
+    const label = newRun();
+    for (const child of tab.children) inlineText(ctx, child, label);
+    if (!strictNormalize(label.text)) throw new HtmlExtractError('Starlight tab label is empty.');
+    flushRun(ctx, label, tab, 'listItem');
+    walk(ctx, panel);
+  }
 }
 
 function handleTable(ctx: Ctx, table: Element): void {
@@ -316,6 +397,8 @@ function pickRoot(doc: Document, selector: string | undefined, notes: string[]):
 }
 
 export function extractHtml(source: string, options: HtmlExtractOptions = {}): Extraction {
+  const profile = options.profile ?? 'generic';
+  if (profile !== 'generic' && profile !== 'starlight') throw new HtmlExtractError('Unknown HTML profile.');
   const doc = parseDocument(source, { withStartIndices: true, withEndIndices: true, decodeEntities: true });
   // Before any selector runs: the selector engine and the extraction below both recurse over the tree.
   const maxDepth = options.maxDepth ?? MAX_NESTING_DEPTH;
@@ -331,7 +414,8 @@ export function extractHtml(source: string, options: HtmlExtractOptions = {}): E
   const { root, strategy, confidence } = pickRoot(doc, options.selector, notes);
   const lineStarts = [0];
   for (let i = 0; i < source.length; i++) if (source.charCodeAt(i) === 10) lineStarts.push(i + 1);
-  const ctx: Ctx = { base, source, lineStarts, blocks: [], notes, root };
+  if (profile === 'starlight') notes.push('Starlight profile: all associated tab panels are compared, including inactive panels; Expressive Code line boundaries and aside titles are retained.');
+  const ctx: Ctx = { profile, base, source, lineStarts, blocks: [], notes, root };
   walk(ctx, root);
-  return { blocks: ctx.blocks, strategy, confidence, notes, issues: [] };
+  return { blocks: ctx.blocks, strategy: profile === 'generic' ? strategy : `${strategy};profile:starlight`, confidence, notes, issues: [] };
 }

@@ -8,6 +8,7 @@ import { fetchUrl } from '../src/fetch.js';
 import type { Report } from '../src/run.js';
 import { CLI, FIXTURES, ROOT } from './helpers.js';
 import { startHarness, type Harness } from './harness.js';
+import { TOOL_VERSION } from '../src/version.js';
 
 function cli(args: string[]) {
   const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
@@ -61,7 +62,7 @@ describe('argument validation', () => {
     assert.match(h.out, /Usage:/);
     const v = cli(['--version']);
     assert.equal(v.code, 0);
-    assert.match(v.out, /^\d+\.\d+\.\d+\n$/);
+    assert.equal(v.out, `${TOOL_VERSION}\n`);
   });
 });
 
@@ -107,7 +108,7 @@ describe('offline mode through the real CLI', () => {
     const ra = JSON.parse(a.out) as Report;
     const rb = JSON.parse(b.out) as Report;
     assert.equal(ra.schemaVersion, 1);
-    assert.match(ra.toolVersion, /^\d+\.\d+\.\d+$/);
+    assert.equal(ra.toolVersion, TOOL_VERSION);
     assert.equal(ra.mode, 'offline');
     assert.equal(ra.sources.html.kind, 'file');
     assert.ok(ra.extraction);

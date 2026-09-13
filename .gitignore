@@ -11,3 +11,6 @@
 !/LICENSE
 !/SECURITY.md
 !/tools/
+!/docs/
+/docs/*
+!/docs/starlight.md

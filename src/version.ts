@@ -3,4 +3,4 @@
 // from package.json, which stays the version the release workflow publishes.
 
 export const TOOL_NAME = 'markdown-parity-check';
-export const TOOL_VERSION = '0.2.7';
+export const TOOL_VERSION = '0.2.8-starlight.0';

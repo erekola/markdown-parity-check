@@ -28,6 +28,8 @@ Modes:
   --base-url <url>        Offline: base for resolving relative links on both sides.
 
 Options:
+  --html-profile generic|starlight
+                          HTML extraction rules (default: generic). Starlight includes inactive tab panels.
   --selector <css>        CSS selector for the HTML main content (default: main, article, [role=main], then body).
   --front-matter keep|strip
                           Markdown front matter. keep (default) removes nothing and warns when the document
@@ -53,6 +55,7 @@ semantic equivalence.
 export class CliError extends Error {}
 
 export interface CliArgs {
+  htmlProfile: 'generic' | 'starlight';
   url?: string;
   markdownUrl?: string;
   htmlFile?: string;
@@ -83,6 +86,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
       allowPositionals: false,
       strict: true,
       options: {
+        'html-profile': { type: 'string', default: 'generic' },
         url: { type: 'string' },
         'markdown-url': { type: 'string' },
         'html-file': { type: 'string' },
@@ -103,11 +107,14 @@ export function parseCliArgs(argv: string[]): CliArgs {
     throw new CliError((err as Error).message);
   }
   const v = parsed.values;
+  const htmlProfile = v['html-profile'];
+  if (htmlProfile !== 'generic' && htmlProfile !== 'starlight') throw new CliError('--html-profile must be generic or starlight.');
   const format = v.format;
   if (format !== 'text' && format !== 'json') throw new CliError(`--format must be text or json (got "${format}").`);
   const frontMatter = v['front-matter'];
   if (frontMatter !== 'keep' && frontMatter !== 'strip') throw new CliError(`--front-matter must be keep or strip (got "${frontMatter}").`);
   const args: CliArgs = {
+    htmlProfile,
     url: v.url,
     markdownUrl: v['markdown-url'],
     htmlFile: v['html-file'],
@@ -232,7 +239,7 @@ export async function main(argv: string[], io: CliIo = { stdout: (s) => process.
     io.stdout(`${TOOL_VERSION}\n`);
     return 0;
   }
-  const options: RunOptions = { selector: args.selector, frontMatter: args.frontMatter, strict: args.strict, mode: args.url !== undefined ? 'url' : 'offline' };
+  const options: RunOptions = { htmlProfile: args.htmlProfile, selector: args.selector, frontMatter: args.frontMatter, strict: args.strict, mode: args.url !== undefined ? 'url' : 'offline' };
   let html: SourceInput | null = null;
   let markdown: SourceInput | null = null;
   let report: Report;

@@ -32,6 +32,7 @@ export interface SourceInput {
 }
 
 export interface RunOptions {
+  htmlProfile?: 'generic' | 'starlight';
   selector?: string;
   /** Markdown front matter handling; 'keep' by default (nothing removed). */
   frontMatter?: 'keep' | 'strip';
@@ -167,7 +168,7 @@ export function run(html: SourceInput, markdown: SourceInput, options: RunOption
   if (typeof maxDepth !== 'number' || Number.isNaN(maxDepth) || maxDepth <= 0) throw new TypeError(`Limit maxNestingDepth must be a positive number (got ${String(maxDepth)}).`);
   let h: Extraction;
   try {
-    h = extractHtml(html.body, { selector: options.selector, baseUrl: html.base, maxDepth });
+    h = extractHtml(html.body, { profile: options.htmlProfile, selector: options.selector, baseUrl: html.base, maxDepth });
   } catch (err) {
     throw extractionError('HTML', err) ?? err;
   }
