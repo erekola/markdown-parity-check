@@ -119,4 +119,35 @@ describe('opt-in Starlight extraction', () => {
     const other = ec(['echo one']).replace('<div class="ec-line">', '<div class="ec-line"><div class="marker">X</div>');
     assert.equal(compare(other, '```sh\necho one\n```').summary.exitCode, 1);
   });
+  it('reads an iframe with a source and a title as the link the exporter writes', () => {
+    const html = tabHtml.replace(ec(['npm install sample']), '<iframe src="/files/npm.txt" title="npm file"></iframe>');
+    const md = tabMd.replace('```sh\n  npm install sample\n  ```', '[npm file](/files/npm.txt)');
+    assert.equal(compare(html, md).summary.exitCode, 0, JSON.stringify(compare(html, md).findings));
+    assert.equal(compare(html, md.replace('[npm file]', '[yarn file]')).summary.exitCode, 1);
+    assert.equal(compare(html, md.replace('(/files/npm.txt)', '(/files/yarn.txt)')).summary.exitCode, 1);
+    assert.equal(compare(html, md.replace('  [npm file](/files/npm.txt)\n\n', '')).summary.exitCode, 1);
+  });
+  it('keeps an iframe without both a source and a title out of the comparison, and the generic profile unchanged', () => {
+    assert.equal(compare('<p>Intro</p><iframe src="/x.txt"></iframe><iframe title="No source"></iframe>', 'Intro').summary.exitCode, 0);
+    assert.equal(compare('<p>Intro</p><iframe src="/x.txt" title="A file"></iframe>', 'Intro', 'generic').summary.exitCode, 0);
+  });
+  it('refuses an iframe outside the tab panels', () => {
+    assert.throws(() => compare(tabHtml.replace('</starlight-tabs>', '<iframe src="/x.txt" title="Stray"></iframe></starlight-tabs>'), tabMd), /Unexpected/);
+  });
+  it('prefixes Expressive Code ins and del lines the way the exporter does', () => {
+    const block = (language: string, lines: string) => `<div class="expressive-code"><figure><pre data-language="${language}"><code>${lines}</code></pre></figure></div>`;
+    const line = (cls: string, inner: string) => `<div class="ec-line${cls}"><div class="code">${inner}</div></div>`;
+    const html = block('js', line('', '<span>import a</span>') + line(' highlight ins', '<span class="indent"><span>  </span></span><span>b()</span>') + line(' del', '<span>c()</span>') + line(' ins', ''));
+    const md = '```diff\nimport a\n+  b()\n-c()\n\n```';
+    assert.equal(compare(html, md).summary.exitCode, 0, JSON.stringify(compare(html, md).findings));
+    assert.equal(compare(html, md.replace('+  b()', '-  b()')).summary.exitCode, 1);
+    assert.equal(compare(html, md.replace('+  b()', '  b()')).summary.exitCode, 1);
+  });
+  it('adds no marker to a diff-language block or to a block without ins or del lines', () => {
+    const block = (language: string, lines: string) => `<div class="expressive-code"><figure><pre data-language="${language}"><code>${lines}</code></pre></figure></div>`;
+    const line = (cls: string, inner: string) => `<div class="ec-line${cls}"><div class="code">${inner}</div></div>`;
+    assert.equal(compare(block('diff', line(' ins', '<span>+b</span>')), '```diff\n+b\n```').summary.exitCode, 0);
+    assert.equal(compare(block('js', line(' mark', '<span>b</span>')), '```js\nb\n```').summary.exitCode, 0);
+    assert.equal(compare(block('js', line(' ins', '<span>b</span>')), '```js\n+b\n```', 'generic').summary.exitCode, 1);
+  });
 });

@@ -8,4 +8,6 @@ Use the article body as the HTML content region. A complete document export can 
 
 Inactive panel content is included only when the tab and panel identifiers form a complete, unambiguous association. Hidden descendants remain hidden. Missing associations stop the comparison with an input error. Terminal frame labels are omitted, while code filenames remain part of the comparison.
 
+The profile reads two structures the way starlight-llms-txt exports them. An iframe with both a source and a title becomes a link whose text is the title, and any other iframe is left out. On a code block whose language is not diff, lines marked as inserted or deleted get a leading + or -, which the page itself shows only through styling. A line-number gutter is left out of the code text. The profile does not model an export that keeps gutter numbers.
+
 This profile does not execute JavaScript or test browser interactions. It supports the component structures covered by the tests. A passing result means the extracted blocks contain no rejecting differences.

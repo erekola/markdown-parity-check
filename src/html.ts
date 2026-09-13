@@ -108,8 +108,16 @@ function ancestor(el: Element, predicate: (node: Element) => boolean): Element |
   return null;
 }
 
+/** The link starlight-llms-txt writes for an iframe. hast-util-to-mdast keeps an iframe only when it has both a
+ * source and a title, as a link whose text is the title; any other iframe produces nothing. */
+function iframeLink(el: Element): { src: string; title: string } | null {
+  const src = el.attribs['src'] ?? '';
+  const title = el.attribs['title'] ?? '';
+  return src && title ? { src, title } : null;
+}
+
 function isSkipped(el: Element, root: Element, profile: 'generic' | 'starlight' = 'generic', ignoreHidden = false): boolean {
-  if (SKIP_TAGS.has(el.name)) return true;
+  if (SKIP_TAGS.has(el.name) && !(profile === 'starlight' && el.name === 'iframe' && iframeLink(el))) return true;
   const role = (el.attribs['role'] ?? '').toLowerCase();
   if (SKIP_ROLES.has(role)) return true;
   if (el.attribs['hidden'] !== undefined && !ignoreHidden) return true;
@@ -155,6 +163,14 @@ function inlineText(ctx: Ctx, node: ChildNode, run: InlineRun): void {
   if (node.name === 'img') {
     const alt = node.attribs['alt'];
     if (alt && alt.trim()) run.text += ` ${alt} `;
+    return;
+  }
+  if (ctx.profile === 'starlight' && node.name === 'iframe') {
+    const link = iframeLink(node);
+    if (link) {
+      run.links.push({ text: strictNormalize(link.title), rawHref: link.src, resolved: resolveHref(link.src, ctx.base) });
+      run.text += link.title;
+    }
     return;
   }
   if (node.name === 'a' && node.attribs['href'] !== undefined) {
@@ -295,7 +311,42 @@ function starlightCode(pre: Element): string {
   if (lines.length === 0 || !lines.every((node) => node instanceof Element && node.name === 'div' && hasClass(node, 'ec-line'))) return textContent(pre);
   // A gutter (line numbers from a plugin) sits beside the code as a direct child of the line; it is not code text.
   const gutter = (node: ChildNode) => node instanceof Element && node.name === 'div' && hasClass(node, 'gutter');
-  return lines.map((line) => textContent((line as Element).children.filter((node) => !gutter(node)))).join('\n');
+  // starlight-llms-txt prefixes + or - to ins and del lines when the block has a language other than diff. The page
+  // shows those lines only through styling, so the marker is in the export and not in the HTML text.
+  const language = pre.attribs['data-language'];
+  const diffMarkers = Boolean(language) && language !== 'diff'
+    && lines.some((line) => line instanceof Element && (hasClass(line, 'ins') || hasClass(line, 'del')));
+  return lines.map((line) => starlightLineText((line as Element).children.filter((node) => !gutter(node)), line as Element, diffMarkers)).join('\n');
+}
+
+/** One Expressive Code line as starlight-llms-txt exports it. The marker goes before the first text of the first
+ * span that is not an indent span; a line whose first such span does not start with text gets no marker. */
+function starlightLineText(children: ChildNode[], line: Element, diffMarkers: boolean): string {
+  const inserted = hasClass(line, 'ins');
+  if (!diffMarkers || !(inserted || hasClass(line, 'del'))) return textContent(children);
+  const target = firstNonIndentSpan(children)?.children[0];
+  if (!(target instanceof Text)) return textContent(children);
+  let out = '';
+  const collect = (nodes: ChildNode[]): void => {
+    for (const node of nodes) {
+      if (node instanceof Text) out += (node === target ? (inserted ? '+' : '-') : '') + node.data;
+      else if (node instanceof Element) collect(node.children);
+    }
+  };
+  collect(children);
+  return out;
+}
+
+/** The first span without the indent class in document order, the element hast-util-select finds for
+ * `span:not(.indent)` inside a line. */
+function firstNonIndentSpan(nodes: ChildNode[]): Element | null {
+  for (const node of nodes) {
+    if (!(node instanceof Element)) continue;
+    if (node.name === 'span' && !hasClass(node, 'indent')) return node;
+    const inner = firstNonIndentSpan(node.children);
+    if (inner) return inner;
+  }
+  return null;
 }
 
 /** Starlight's Markdown exporter represents every tab as a labelled list item, including inactive panels. */
@@ -329,6 +380,7 @@ function handleStarlightTabs(ctx: Ctx, component: Element): void {
     }
     if (!(node instanceof Element) || controlNodes.has(node)) return;
     if (isSkipped(node, ctx.root, ctx.profile)) return;
+    if (node.name === 'iframe') throw new HtmlExtractError('Unexpected content outside Starlight tab labels and panels.');
     for (const child of node.children) validateWrapper(child);
   };
   for (const child of component.children) validateWrapper(child);
