@@ -51,6 +51,7 @@ Exit code 0 means the implemented checks found nothing to reject. It does not pr
 | `--html-file PATH --markdown-file PATH` | Compare two local files instead. |
 | `--base-url URL` | Resolve relative links in local files. Local-file mode only. |
 | `--selector CSS` | Choose the HTML content container. |
+| `--html-profile generic` or `--html-profile starlight` | Use the generic HTML rules, which is the default, or the Starlight rules, which also compare inactive tab panels and keep Expressive Code line breaks. |
 | `--front-matter keep` or `--front-matter strip` | Keep Markdown front matter, which is the default, or remove it before the comparison. |
 | `--format text` or `--format json` | Print a readable report, which is the default, or a structured one. |
 | `--output PATH` | Write the report to a file. An input file is never overwritten. |
