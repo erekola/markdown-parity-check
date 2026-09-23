@@ -129,11 +129,31 @@ function urlStart(t: string, s: number, e: number): number {
     best = p;
     break;
   }
+  // [\/\\]{2}[^\s<>"'()\/\\?#]*@  An authority that carries user information (0.2.10): the first pair of
+  // slashes or backslashes whose authority, up to the next / \ ? or #, holds an '@'. Without it
+  // //user:secret@host/path passed through a report unmasked, because no other alternative reads a run without
+  // a scheme, query or fragment, and neither did https:\\user:secret@host, because the scheme alternative wants
+  // "://". A failed candidate is scanned only to its own delimiter, so the scans do not overlap.
+  const isSep = (c: number) => c === 0x2f || c === 0x5c;
+  for (let p = s; p + 2 < e && (best < 0 || p < best); p++) {
+    if (!isSep(t.charCodeAt(p)) || !isSep(t.charCodeAt(p + 1))) continue;
+    let k = p + 2;
+    while (k < e) {
+      const c = t.charCodeAt(k);
+      if (c === 0x2f || c === 0x5c || c === 0x3f || c === 0x23 || c === 0x40) break;
+      k++;
+    }
+    if (k < e && t.charCodeAt(k) === 0x40) {
+      best = p;
+      break;
+    }
+    if (k > p + 2) p = k - 1;
+  }
   return best;
 }
 
-/** Masks query values and fragments of every URL-like run in a piece of report text. */
-export function redactText(text: string): string {
+/** Rewrites the URL-like part of every run in a piece of text and leaves the rest untouched. */
+function rewriteUrlRuns(text: string, rewrite: (url: string) => string): string {
   let out = '';
   let done = 0;
   for (const run of text.matchAll(RUN)) {
@@ -144,10 +164,33 @@ export function redactText(text: string): string {
     // Keep trailing sentence punctuation outside the URL.
     let end = e;
     while (end > p && TRAIL.includes(text[end - 1]!)) end--;
-    out += text.slice(done, p) + maskHref(text.slice(p, end)) + text.slice(end, e);
+    out += text.slice(done, p) + rewrite(text.slice(p, end)) + text.slice(end, e);
     done = e;
   }
   return out + text.slice(done);
+}
+
+/** Masks user information, query values and fragments of every URL-like run in a piece of report text. */
+export function redactText(text: string): string {
+  return rewriteUrlRuns(text, maskHref);
+}
+
+/**
+ * The text with the parts that maskHref hides taken out of every URL-like run: user information, query values
+ * and the fragment. Nothing else moves, and nothing is normalized, so every other number stays as it was.
+ */
+export function hideUrlSecrets(text: string): string {
+  return rewriteUrlRuns(text, withoutUrlSecrets);
+}
+
+/**
+ * The numeric tokens a report may show. extractNumbers reads the whole text, so a numeric query value, such as
+ * an access token in a link printed on the page, is among them, and the recursive report redactor does not
+ * recognise a bare number as part of a URL. A value is reported only when it survives the URL masking (found
+ * by an outside review 2026-09-22).
+ */
+export function visibleNumbers(text: string): string[] {
+  return extractNumbers(hideUrlSecrets(text));
 }
 
 /** Resolves a possibly relative href against a base. Returns null when it cannot be resolved. */
@@ -168,30 +211,28 @@ export function resolveHref(rawHref: string, base: string | null): string | null
   }
 }
 
-/** Masks query values and drops the fragment for display in reports and logs. Never returns the raw
- * query of an unparseable input either. */
+/** Masks query values, drops the fragment and removes user information for display in reports and logs.
+ * Never returns the raw query or the credentials of an unparseable input either. */
 export function maskUrl(url: string): string {
-  try {
-    const u = new URL(url);
-    for (const key of Array.from(u.searchParams.keys())) u.searchParams.set(key, '***');
-    u.hash = '';
-    return u.href;
-  } catch {
-    return maskHref(url);
-  }
+  return maskHref(url);
 }
 
-/** Masks query values and drops the fragment of an absolute or relative href for display. */
+/** Masks query values, drops the fragment and removes user information of an absolute or relative href for
+ * display. The user name goes with the password, because either one can be the secret. Up to 0.2.9 both
+ * stayed in the output, and so in the error of a refused URL (found by an outside review 2026-09-22). */
 export function maskHref(href: string): string {
   try {
     const u = new URL(href);
+    u.username = '';
+    u.password = '';
     for (const key of Array.from(u.searchParams.keys())) u.searchParams.set(key, '***');
     u.hash = '';
     return u.href;
   } catch {
-    // Relative or unparseable: mask by hand.
-    const hashAt = href.indexOf('#');
-    let h = hashAt >= 0 ? href.slice(0, hashAt) : href;
+    // Relative, protocol-relative or unparseable: mask by hand.
+    const plain = withoutUserinfo(href);
+    const hashAt = plain.indexOf('#');
+    let h = hashAt >= 0 ? plain.slice(0, hashAt) : plain;
     const q = h.indexOf('?');
     if (q >= 0) {
       const params = h.slice(q + 1).split('&').map((kv) => (kv === '' ? kv : `${kv.split('=')[0]}=***`));
@@ -199,6 +240,63 @@ export function maskHref(href: string): string {
     }
     return h;
   }
+}
+
+const SPECIAL_SCHEMES = new Set(['ftp', 'file', 'http', 'https', 'ws', 'wss']);
+
+/**
+ * The href without its user information. The authority is found where the URL parser looks for it: after
+ * "scheme:" and any slashes or backslashes for a special scheme, after "//" for any other scheme, and after two
+ * slashes or backslashes when there is no scheme, because a relative reference in a web page resolves against
+ * an http or https base. When the parser reads the address, the user information ends at the last '@' before
+ * the authority ends, so an '@' in a path stays. When the parser refuses the address, nothing tells which '@'
+ * ends the user information, so everything up to the last '@' before the query or the fragment is shown as ***.
+ * The mask is visible on purpose. Three review rounds on 2026-09-22 measured every rule that guessed: stopping
+ * at the first slash returned a password that holds a slash, reading to the last '@' made a host vanish without
+ * a trace, and telling user:password from host:port by the digits did both. The
+ * string is first read the way the parser reads it (urlParserInput), so a tab or newline cannot hide a
+ * delimiter.
+ */
+function withoutUserinfo(href: string): string {
+  const h = urlParserInput(href);
+  const scheme = /^[a-z][a-z0-9+.-]*:/i.exec(h);
+  const special = scheme === null || SPECIAL_SCHEMES.has(scheme[0].slice(0, -1).toLowerCase());
+  const isSlash = (c: number) => c === 0x2f || (special && c === 0x5c);
+  const from = scheme ? scheme[0].length : 0;
+  let j = from;
+  while (j < h.length && isSlash(h.charCodeAt(j))) j++;
+  const hasAuthority = scheme === null ? j - from >= 2 : special || h.startsWith('//', from);
+  if (!hasAuthority) return href;
+  if (scheme !== null && !special) j = from + 2;
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(h, scheme === null ? 'https://base.invalid/' : undefined);
+  } catch {
+    parsed = null;
+  }
+  let at = -1;
+  for (let k = j; k < h.length; k++) {
+    const c = h.charCodeAt(k);
+    if (c === 0x3f || c === 0x23 || (parsed !== null && isSlash(c))) break;
+    if (c === 0x40) at = k;
+  }
+  if (at < 0) return href;
+  return h.slice(0, j) + (parsed === null ? '***@' : '') + h.slice(at + 1);
+}
+
+/** The URL-like string with what maskHref hides taken out: user information, query values and the fragment.
+ * Query names stay, as they do in maskHref. */
+function withoutUrlSecrets(url: string): string {
+  let h = withoutUserinfo(url);
+  const hashAt = h.indexOf('#');
+  if (hashAt >= 0) h = h.slice(0, hashAt);
+  const q = h.indexOf('?');
+  if (q < 0) return h;
+  const params = h.slice(q + 1).split('&').map((kv) => {
+    const eq = kv.indexOf('=');
+    return eq < 0 ? kv : kv.slice(0, eq + 1);
+  });
+  return `${h.slice(0, q)}?${params.join('&')}`;
 }
 
 /** Describes how two hrefs differ without revealing masked parts. */

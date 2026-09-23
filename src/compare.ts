@@ -2,7 +2,7 @@
 
 import { align, UNCERTAIN_THRESHOLD, type AlignmentLimits, type Pair } from './align.js';
 import type { Block, Extraction, Finding, FindingSide, Link } from './model.js';
-import { excerpt, hrefDifference, maskHref, redactText, relativeHrefRelation } from './normalize.js';
+import { excerpt, hrefDifference, maskHref, redactText, relativeHrefRelation, visibleNumbers } from './normalize.js';
 
 export interface Coverage {
   htmlBlocks: number;
@@ -140,7 +140,16 @@ function comparePair(out: Finding[], p: Pair, h: Block, m: Block, bothBases: boo
   } else if (h.text !== m.text) {
     const nd = diffNumbers(h.numbers, m.numbers);
     if (nd) {
-      out.push({ code: 'NUMBER_CHANGED', severity: 'error', direction: 'both', message: `Numeric value differs in the ${label(h)}: ${nd.before.join(', ') || '(none)'} in HTML, ${nd.after.join(', ') || '(none)'} in Markdown.`, html: side(h), markdown: side(m), before: nd.before.join(', '), after: nd.after.join(', ') });
+      // Block.numbers holds every numeric token, also one inside a URL's query value, fragment or user
+      // information, so a change there is still a number change and the classification does not move. What the
+      // finding shows is read again from the text with those parts taken out, because the report masks them and
+      // a bare number is not recognisable as part of a URL at the reporting boundary (0.2.10).
+      const shown = diffNumbers(visibleNumbers(h.text), visibleNumbers(m.text));
+      if (shown) {
+        out.push({ code: 'NUMBER_CHANGED', severity: 'error', direction: 'both', message: `Numeric value differs in the ${label(h)}: ${shown.before.join(', ') || '(none)'} in HTML, ${shown.after.join(', ') || '(none)'} in Markdown.`, html: side(h), markdown: side(m), before: shown.before.join(', '), after: shown.after.join(', ') });
+      } else {
+        out.push({ code: 'NUMBER_CHANGED', severity: 'error', direction: 'both', message: `Numeric value differs in the ${label(h)} inside a masked part of a URL (a query value, the fragment or user information), so the values are not shown.`, html: side(h), markdown: side(m) });
+      }
     } else if (h.loose === m.loose) {
       out.push({ code: 'TEXT_MINOR_CHANGED', severity: 'warning', direction: 'both', message: `The ${label(h)} differs only in case, punctuation or typographic characters.`, html: side(h), markdown: side(m), before: excerpt(h.text), after: excerpt(m.text) });
     } else {

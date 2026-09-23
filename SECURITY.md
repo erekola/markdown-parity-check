@@ -16,7 +16,7 @@ URL mode requests HTML and Markdown over HTTP or HTTPS. Non-public network targe
 
 The comparison work is bounded by the product of the two block counts, at most 4 000 000 block pairs. The number of similar block pairs kept for matching is bounded as well. Above either limit the tool stops with exit code 2 and an error message instead of reporting a pass for a comparison it did not complete.
 
-Offline mode reads the two files supplied by the caller. The output option writes a report to the selected path. Reports mask URL query values, but excerpts may contain private page content. Review reports before sharing them.
+Offline mode reads the two files supplied by the caller. The output option writes a report to the selected path. Reports mask URL query values and fragments and remove any user name or password from a URL. Excerpts may contain private page content. Review reports before sharing them.
 
 ## Dependencies and releases
 

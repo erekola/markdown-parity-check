@@ -68,7 +68,7 @@ Headings, paragraphs, list items, tables, code blocks and links are compared blo
 
 In URL mode the Markdown response is checked first. An HTTP error or an HTML page in place of Markdown fails the check, and nothing is compared.
 
-JavaScript is not executed. Content that a page builds in the browser is compared as the server sent it. Block matching is heuristic, so some layouts need an explicit selector. Reports mask URL query values, but excerpts may still contain private page content. Review a report before you share it.
+JavaScript is not executed. Content that a page builds in the browser is compared as the server sent it. Block matching is heuristic, so some layouts need an explicit selector. Reports mask URL query values and fragments and remove any user name or password from a URL. Excerpts may still contain private page content. Review a report before you share it.
 
 ## Command line and hosted page
 

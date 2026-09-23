@@ -1,14 +1,16 @@
 // Linear-time replacements (0.2.2) for three regular expressions that CodeQL flagged as
 // js/polynomial-redos: URL_IN_TEXT and the trailing punctuation pattern in redactText, and the embedded
 // IPv4 pattern in expandIPv6. The old expressions are kept here as the reference. The new code must give
-// the same answer on every input, and it must stay fast on the inputs that made the old ones slow.
+// the same answer on every input, and it must stay fast on the inputs that made the old ones slow. 0.2.10 added
+// one alternative on purpose, a protocol-relative authority with user information, and the reference below
+// carries it as its last branch.
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { expandIPv6, isPublicIPv6 } from '../src/netguard.js';
 import { excerpt, maskHref, redactText } from '../src/normalize.js';
 
-const OLD_URL_IN_TEXT = /(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"'()]+|www\.[^\s<>"'()]+|(?<![\w/])\/[^\s<>"'()]*[?#][^\s<>"'()]*|[^\s<>"'()]*\?[\w%.-]+=[^\s<>"'()]*)/giu;
+const OLD_URL_IN_TEXT = /(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"'()]+|www\.[^\s<>"'()]+|(?<![\w/])\/[^\s<>"'()]*[?#][^\s<>"'()]*|[^\s<>"'()]*\?[\w%.-]+=[^\s<>"'()]*|[\/\\]{2}[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*)/giu;
 
 function oldRedactText(text: string): string {
   return text.replace(OLD_URL_IN_TEXT, (m) => {
@@ -65,7 +67,7 @@ function randomText(next: () => number, pieces: readonly string[], maxPieces: nu
 // and k, U+0130 and U+0131 do not fold to i), whitespace outside ASCII (U+00A0, U+2028), and surrogates,
 // paired and alone. Written as escapes so the source shows which character each one is.
 const TEXT_PIECES = [
-  'a', 'Z', 'w', 'W', 'www.', 'wWw.', 'http', 'x1', '1', '_', '+', '-', '.', ',', ';', ':', '!', '?', '#', '=', '%', '&',
+  'a', 'Z', 'w', 'W', 'www.', 'wWw.', 'http', 'x1', '1', '_', '+', '-', '.', ',', ';', ':', '!', '?', '#', '=', '%', '&', '@', 'u:p@', '\\',
   '/', '//', '://', 'k=v', '?q=1', ' ', '\t', '\n', '<', '>', '"', "'", '(', ')', '\u00a0', '\u2028', '\u017f', '\u212a',
   '\u0130', '\u0131', '\u00e9', '\ud83d\ude00', '\ud83d', '\ude00',
 ];
