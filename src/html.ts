@@ -480,6 +480,10 @@ export function extractHtml(source: string, options: HtmlExtractOptions = {}): E
   for (let i = 0; i < source.length; i++) if (source.charCodeAt(i) === 10) lineStarts.push(i + 1);
   if (profile === 'starlight') notes.push('Starlight profile: all associated tab panels are compared, including inactive panels; Expressive Code line boundaries and aside titles are retained.');
   const ctx: Ctx = { profile, base, source, lineStarts, blocks: [], notes, root };
-  walk(ctx, root);
+  // A selector that picks a heading, list item, table or pre keeps that block type, so the root goes
+  // through handleBlock. Every other root is read as a container, a list included: handleBlock's list
+  // branch reads only <li> children, and a root list would lose any other content it holds.
+  if (HEADING_RE.test(root.name) || root.name === 'li' || root.name === 'table' || root.name === 'pre') handleBlock(ctx, root);
+  else walk(ctx, root);
   return { blocks: ctx.blocks, strategy: profile === 'generic' ? strategy : `${strategy};profile:starlight`, confidence, notes, issues: [] };
 }

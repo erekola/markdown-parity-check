@@ -356,6 +356,24 @@ describe('extraction edge cases', () => {
     assert.deepEqual(h.blocks.map((b) => b.text), ['A']);
     assert.match(h.notes[0] ?? '', /matched 2 elements/);
   });
+  it('a selector that picks a leaf element keeps the block type of that element', () => {
+    const h = extractHtml('<body><main><h1>Services and pricing</h1><p>Body</p></main></body>', { selector: 'h1' });
+    assert.deepEqual(h.blocks.map((b) => [b.type, b.text]), [['heading', 'Services and pricing']]);
+    const l = extractHtml('<body><main><ul><li>One</li><li>Two</li></ul></main></body>', { selector: 'li' });
+    assert.deepEqual(l.blocks.map((b) => [b.type, b.text]), [['listItem', 'One']]);
+    const t = extractHtml('<body><main><table><tr><th>A</th></tr><tr><td>1</td></tr></table></main></body>', { selector: 'table' });
+    assert.deepEqual(t.blocks.map((b) => b.type), ['table']);
+    const c = extractHtml('<body><main><pre>const a = 1;</pre></main></body>', { selector: 'pre' });
+    assert.deepEqual(c.blocks.map((b) => b.type), ['code']);
+  });
+  it('a selector that picks a list keeps content that is not a list item', () => {
+    const h = extractHtml('<body><main><ul id="l">Stray text<li>One</li></ul></main></body>', { selector: '#l' });
+    assert.deepEqual(h.blocks.map((b) => [b.type, b.text]), [['paragraph', 'Stray text'], ['listItem', 'One']]);
+  });
+  it('a selector that picks a container still reads its children as blocks', () => {
+    const h = extractHtml('<body><main><div id="c"><h2>T</h2><p>Body</p><ul><li>One</li></ul></div></main></body>', { selector: '#c' });
+    assert.deepEqual(h.blocks.map((b) => [b.type, b.text]), [['heading', 'T'], ['paragraph', 'Body'], ['listItem', 'One']]);
+  });
   it('falls back to body with low confidence and a warning finding', () => {
     const h = extractHtml('<html><body><nav>x</nav><div><p>Only body</p></div></body></html>');
     assert.equal(h.confidence, 'low');
