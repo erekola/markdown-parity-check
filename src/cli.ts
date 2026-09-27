@@ -54,6 +54,22 @@ semantic equivalence.
 
 export class CliError extends Error {}
 
+/**
+ * Whether the raw argv asks for JSON output, read directly because an argument error can be
+ * thrown before parseCliArgs has produced a validated CliArgs (M-01, outside audit 2026-09-26).
+ * Accepts both --format json and --format=json; the last occurrence wins, matching parseArgs.
+ */
+function rawWantsJson(argv: string[]): boolean {
+  let wants = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === undefined) continue;
+    if (a === '--format') wants = argv[i + 1] === 'json';
+    else if (a.startsWith('--format=')) wants = a.slice('--format='.length) === 'json';
+  }
+  return wants;
+}
+
 export interface CliArgs {
   htmlProfile: 'generic' | 'starlight';
   url?: string;
@@ -259,7 +275,17 @@ export async function main(argv: string[], io: CliIo = { stdout: (s) => process.
   try {
     args = parseCliArgs(argv);
   } catch (err) {
-    io.stderr(`Error: ${(err as Error).message}\n`);
+    const message = (err as Error).message;
+    // Argument validation fails before args.format is known, so a request for JSON is read from
+    // the raw argv instead (M-01). The error report shape and exit code match a runtime failure;
+    // stdout carries the report on top of, not instead of, the plain-text stderr line every
+    // argument error writes, since --output cannot be trusted without validated args and callers
+    // already rely on the stderr line regardless of format (test/review-0212.test.ts, test/secrets.test.ts).
+    if (rawWantsJson(argv)) {
+      const report = errorReport({ strict: false, mode: 'offline' }, null, null, message);
+      io.stdout(renderJson(report));
+    }
+    io.stderr(`Error: ${message}\n`);
     return 2;
   }
   if (args.help) {

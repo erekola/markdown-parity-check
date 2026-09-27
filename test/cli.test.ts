@@ -47,6 +47,25 @@ describe('argument validation', () => {
     assert.match(cli([...fx('numbers'), '--front-matter', 'auto']).err, /--front-matter must be keep or strip/);
     assert.match(cli([...fx('same'), 'extra']).err, /Unexpected argument/);
   });
+  it('an argument error under --format json is a JSON error report, not plain text (M-01)', () => {
+    const r = cli(['--url', 'https://', '--format', 'json']);
+    assert.equal(r.code, 2);
+    const parsed = JSON.parse(r.out);
+    assert.equal(parsed.summary.exitCode, 2);
+    assert.equal(parsed.summary.result, 'error');
+    assert.match(parsed.summary.error, /Not a valid absolute URL/);
+    // The equals-sign form is read the same way, and the last --format wins, as parseArgs does.
+    const eq = cli(['--url', 'https://', '--format=json']);
+    assert.equal(JSON.parse(eq.out).summary.error, parsed.summary.error);
+    const last = cli(['--url', 'https://', '--format', 'text', '--format', 'json']);
+    assert.doesNotThrow(() => JSON.parse(last.out));
+  });
+  it('an argument error without --format json stays plain text (M-01)', () => {
+    const r = cli(['--url', 'https://']);
+    assert.equal(r.code, 2);
+    assert.equal(r.out, '');
+    assert.match(r.err, /Not a valid absolute URL/);
+  });
   it('refuses --output that points at an input file', () => {
     const r = cli([...fx('same'), '--output', path.join(FIXTURES, 'same', 'page.md')]);
     assert.equal(r.code, 2);
