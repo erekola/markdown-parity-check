@@ -130,16 +130,34 @@ describe('F12: zero width joiners', () => {
 });
 
 describe('the independent review before 0.2.13: time on long lists and unclosed hidden tags', () => {
-  it('a numbered list of 20 000 items and 20 000 unclosed hidden tags each take well under two seconds', () => {
-    const items = Array.from({ length: 20000 }, (_, i) => `<li>Item ${i}</li>`).join('');
-    let t0 = performance.now();
-    const h = extractHtml(page(`<ol>${items}</ol>`), { baseUrl: BASE });
-    assert.equal(h.blocks[19999]?.list?.ordinal, 20000);
-    assert.ok(performance.now() - t0 < 2000, `list ${(performance.now() - t0).toFixed(0)} ms`);
-    t0 = performance.now();
-    const m = extractMarkdown(`Text ${'<span hidden>x '.repeat(20000)}end.\n`, { baseUrl: BASE });
+  // Growth, not a wall clock: a fixed limit failed on the slower CI runners although the code was linear. Four times
+  // the input takes about four times as long when the work is linear and sixteen times when it is quadratic, as the
+  // first 0.2.13 version was (a list of 20 000 items took ten seconds, 20 000 unclosed hidden tags two minutes).
+  const time = (f: () => void) => {
+    const t0 = performance.now();
+    f();
+    return performance.now() - t0;
+  };
+  const list = (n: number) => () => {
+    const h = extractHtml(page(`<ol>${Array.from({ length: n }, (_, i) => `<li>Item ${i}</li>`).join('')}</ol>`), { baseUrl: BASE });
+    assert.equal(h.blocks[n - 1]?.list?.ordinal, n);
+  };
+  const hidden = (n: number) => () => {
+    const m = extractMarkdown(`Text ${'<span hidden>x '.repeat(n)}end.\n`, { baseUrl: BASE });
     assert.ok(m.issues.length > 0);
-    assert.ok(performance.now() - t0 < 2000, `hidden ${(performance.now() - t0).toFixed(0)} ms`);
+  };
+  it('a numbered list grows about linearly from 5 000 to 20 000 items', () => {
+    list(1000)();
+    const small = time(list(5000));
+    const large = time(list(20000));
+    assert.ok(large < 8 * small, `5 000 items ${small.toFixed(0)} ms, 20 000 items ${large.toFixed(0)} ms`);
+  });
+  it('unclosed hidden tags grow about linearly from 5 000 to 20 000', () => {
+    hidden(1000)();
+    const small = time(hidden(5000));
+    const large = time(hidden(20000));
+    // The Markdown side measured 5 to 7 times on this input, so the bound sits between that and sixteen.
+    assert.ok(large < 11 * small, `5 000 tags ${small.toFixed(0)} ms, 20 000 tags ${large.toFixed(0)} ms`);
   });
 });
 

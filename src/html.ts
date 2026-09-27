@@ -57,6 +57,8 @@ interface Ctx {
   listBase: number;
   /** The item numbers of each numbered list, computed once per list. */
   ordinals: Map<Element, Map<Element, number>>;
+  /** The path segment of each element, computed once per parent and tag name. */
+  segments: Map<Element, string>;
 }
 
 function lineOf(ctx: Ctx, node: AnyNode): number | undefined {
@@ -77,26 +79,26 @@ function pathOf(ctx: Ctx, el: Element): string {
   const parts: string[] = [];
   let cur: Element | null = el;
   while (cur) {
-    let index = 1;
-    let sib = cur.prev;
-    while (sib) {
-      if (sib instanceof Element && sib.name === cur.name) index++;
-      sib = sib.prev;
-    }
-    parts.unshift(index > 1 || hasLaterSameNamedSibling(cur) ? `${cur.name}:nth-of-type(${index})` : cur.name);
+    parts.unshift(segment(ctx, cur));
     if (cur === ctx.root) break;
     cur = cur.parent instanceof Element ? cur.parent : null;
   }
   return parts.join(' > ');
 }
 
-function hasLaterSameNamedSibling(el: Element): boolean {
-  let sib = el.next;
-  while (sib) {
-    if (sib instanceof Element && sib.name === el.name) return true;
-    sib = sib.next;
-  }
-  return false;
+/**
+ * The element's own part of a path: its tag name, with :nth-of-type(n) when the parent has more than one child of
+ * that name. The positions of all same-named siblings are computed at once and kept in ctx. Up to 0.2.12 every
+ * block counted its siblings again, so a list of 20 000 items took time quadratic in its length (found by an
+ * independent review before 0.2.13 was released).
+ */
+function segment(ctx: Ctx, el: Element): string {
+  const known = ctx.segments.get(el);
+  if (known !== undefined) return known;
+  const siblings = el.parent ? el.parent.children : [el];
+  const same = siblings.filter((c): c is Element => c instanceof Element && c.name === el.name);
+  same.forEach((c, i) => ctx.segments.set(c, same.length > 1 ? `${c.name}:nth-of-type(${i + 1})` : c.name));
+  return ctx.segments.get(el) ?? el.name;
 }
 
 function hasClass(el: Element, name: string): boolean {
@@ -605,7 +607,7 @@ export function extractHtml(source: string, options: HtmlExtractOptions = {}): E
   const lineStarts = [0];
   for (let i = 0; i < source.length; i++) if (source.charCodeAt(i) === 10) lineStarts.push(i + 1);
   if (profile === 'starlight') notes.push('Starlight profile: all associated tab panels are compared, including inactive panels; Expressive Code line boundaries and aside titles are retained.');
-  const ctx: Ctx = { profile, base, source, lineStarts, blocks: [], notes, root, listBase: 0, ordinals: new Map() };
+  const ctx: Ctx = { profile, base, source, lineStarts, blocks: [], notes, root, listBase: 0, ordinals: new Map(), segments: new Map() };
   // A selector that picks a heading, list item, table or pre keeps that block type, so the root goes
   // through handleBlock. Every other root is read as a container, a list included: handleBlock's list
   // branch reads only <li> children, and a root list would lose any other content it holds.
