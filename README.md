@@ -62,9 +62,9 @@ Exit code 0 means the implemented checks found nothing to reject. It does not pr
 
 ## What is compared
 
-Without `--selector`, the HTML content comes from `main`, `article` or `[role=main]`. If none of them exists, the page body is used and the report warns that page chrome may leak in. Front matter is kept by default and compared as content. If the HTML does not carry the same text, that alone fails the comparison. The tool also warns when the Markdown starts with a block that looks like YAML front matter, and `--front-matter strip` removes it.
+Without `--selector`, the HTML content comes from the first visible `main`, `article` or `[role=main]`. If none of them exists, the page body is used and the report warns that page chrome may leak in. Two visible elements of the same kind that do not contain one another also give a warning, because only the first is compared. Front matter is kept by default and compared as content. If the HTML does not carry the same text, that alone fails the comparison. The tool also warns when the Markdown starts with a block that looks like YAML front matter, and `--front-matter strip` removes it.
 
-Headings, paragraphs, list items, tables, code blocks and links are compared block by block. Missing and added blocks are errors. So are changes in text, numbers, tables and links. A change of order, heading level, case or punctuation is a warning. Repeated blocks are reported too.
+Headings, paragraphs, list items, tables, code blocks and links are compared block by block. Content marked `hidden` or `aria-hidden` is left out on both sides, and a table caption counts as a paragraph before the table. Missing and added blocks are errors. A change in text or numbers is an error too, as is a changed table or link, and a list item that shows another number or task state. A difference in order, heading level, case, punctuation, list kind or nesting level is a warning. Footnotes in the Markdown are not compared. Each one is reported as a warning, and repeated blocks are reported too.
 
 In URL mode the Markdown response is checked first. An HTTP error or an HTML page in place of Markdown fails the check, and nothing is compared.
 

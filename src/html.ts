@@ -4,8 +4,7 @@
 import { parseDocument } from 'htmlparser2';
 import { selectAll, selectOne } from 'css-select';
 import { Element, Text, type AnyNode, type ChildNode, type Document, type ParentNode } from 'domhandler';
-import { textContent } from 'domutils';
-import type { Block, Extraction, Link } from './model.js';
+import type { Block, Extraction, ExtractionIssue, Link, ListInfo } from './model.js';
 import { extractNumbers, looseNormalize, normalizeCode, resolveHref, strictNormalize } from './normalize.js';
 
 export interface HtmlExtractOptions {
@@ -53,6 +52,11 @@ interface Ctx {
   blocks: Block[];
   notes: string[];
   root: Element;
+  /** Nesting level added to every list inside a Starlight tab panel, because starlight-llms-txt nests the panel
+   * content inside the tab's list item. */
+  listBase: number;
+  /** The item numbers of each numbered list, computed once per list. */
+  ordinals: Map<Element, Map<Element, number>>;
 }
 
 function lineOf(ctx: Ctx, node: AnyNode): number | undefined {
@@ -114,6 +118,25 @@ function iframeLink(el: Element): { src: string; title: string } | null {
   const src = el.attribs['src'] ?? '';
   const title = el.attribs['title'] ?? '';
   return src && title ? { src, title } : null;
+}
+
+/** The hidden and aria-hidden attributes alone, without the tag, role and page chrome rules of isSkipped. */
+function hiddenAttr(el: Element): boolean {
+  return el.attribs['hidden'] !== undefined || el.attribs['aria-hidden'] === 'true';
+}
+
+/**
+ * Text of code as the page shows it: every text node with its whitespace, except under a hidden or aria-hidden
+ * element. Up to 0.2.12 code used textContent, which also returns hidden descendants, so a hidden span inside a
+ * code block counted as code while the same span in a paragraph did not (found by an outside review 2026-09-26).
+ */
+function visibleCode(nodes: ChildNode[]): string {
+  let out = '';
+  for (const node of nodes) {
+    if (node instanceof Text) out += node.data;
+    else if (node instanceof Element && !hiddenAttr(node)) out += visibleCode(node.children);
+  }
+  return out;
 }
 
 function isSkipped(el: Element, root: Element, profile: 'generic' | 'starlight' = 'generic', ignoreHidden = false): boolean {
@@ -197,11 +220,11 @@ function pushBlock(ctx: Ctx, partial: Omit<Block, 'loose' | 'numbers' | 'locatio
   ctx.blocks.push(block);
 }
 
-function flushRun(ctx: Ctx, run: InlineRun, container: Element, type: 'paragraph' | 'listItem' = 'paragraph'): void {
+function flushRun(ctx: Ctx, run: InlineRun, container: Element, type: 'paragraph' | 'listItem' = 'paragraph', list?: ListInfo): void {
   const text = strictNormalize(run.text);
   if (text === '') return;
   const node = run.firstNode ?? container;
-  pushBlock(ctx, { type, text, links: run.links }, node, container);
+  pushBlock(ctx, { type, text, links: run.links, ...(type === 'listItem' && list ? { list } : {}) }, node, container);
 }
 
 function hasBlockChild(el: Element): boolean {
@@ -248,7 +271,7 @@ function handleBlock(ctx: Ctx, el: Element): void {
     return;
   }
   if (el.name === 'pre') {
-    const code = normalizeCode(ctx.profile === 'starlight' ? starlightCode(el) : textContent(el));
+    const code = normalizeCode(ctx.profile === 'starlight' ? starlightCode(el) : visibleCode(el.children));
     if (code.trim() !== '') pushBlock(ctx, { type: 'code', text: strictNormalize(code), code, links: [] }, el, el);
     return;
   }
@@ -257,9 +280,11 @@ function handleBlock(ctx: Ctx, el: Element): void {
     return;
   }
   if (el.name === 'ul' || el.name === 'ol') {
+    // A hidden item or list is skipped like any other hidden element (0.2.13; up to 0.2.12 it was read).
     for (const c of el.children) {
-      if (c instanceof Element && c.name === 'li') handleListItem(ctx, c);
-      else if (c instanceof Element && (c.name === 'ul' || c.name === 'ol')) handleBlock(ctx, c);
+      if (!(c instanceof Element) || isSkipped(c, ctx.root, ctx.profile)) continue;
+      if (c.name === 'li') handleListItem(ctx, c);
+      else if (c.name === 'ul' || c.name === 'ol') handleBlock(ctx, c);
     }
     return;
   }
@@ -272,9 +297,68 @@ function handleBlock(ctx: Ctx, el: Element): void {
   walk(ctx, el);
 }
 
+/**
+ * Where an item sits in its list (0.2.13). Up to 0.2.12 a list item carried its text only, so a changed start
+ * number, nesting level or task state passed unreported (found by an outside review 2026-09-26).
+ */
+function listInfo(ctx: Ctx, li: Element): ListInfo {
+  const parent = li.parent instanceof Element ? li.parent : null;
+  const ordered = parent?.name === 'ol';
+  let lists = 0;
+  for (let p: ParentNode | null = li.parent; p instanceof Element; p = p.parent) {
+    if (p.name === 'ul' || p.name === 'ol') lists++;
+    if (p === ctx.root) break;
+  }
+  const info: ListInfo = { ordered, depth: ctx.listBase + Math.max(0, lists - 1), checked: taskState(li) };
+  if (ordered && parent) {
+    const ordinal = listOrdinals(ctx, parent).get(li);
+    if (ordinal !== undefined) info.ordinal = ordinal;
+  }
+  return info;
+}
+
+/**
+ * The numbers the visible items of a numbered list show, the way a browser's list counter counts them: from the
+ * list's start, or from the item count for a reversed list without one, and an item's value attribute sets the
+ * number from that item on. One pass per list, kept in ctx; the first version counted again for every item, and
+ * a list of 20 000 items took ten seconds (found by an independent review before 0.2.13 was released). A reversed
+ * list gives only its first item a number: Markdown has no reversed list and numbers every item from the first,
+ * so the later numbers of a faithful Markdown copy can never match.
+ */
+function listOrdinals(ctx: Ctx, ol: Element): Map<Element, number> {
+  const cached = ctx.ordinals.get(ol);
+  if (cached) return cached;
+  const out = new Map<Element, number>();
+  const items = ol.children.filter((c): c is Element => c instanceof Element && c.name === 'li' && !isSkipped(c, ctx.root, ctx.profile));
+  const reversed = ol.attribs['reversed'] !== undefined;
+  const start = Number.parseInt(ol.attribs['start'] ?? '', 10);
+  let n = Number.isFinite(start) ? start : reversed ? items.length : 1;
+  items.forEach((item, i) => {
+    const value = Number.parseInt(item.attribs['value'] ?? '', 10);
+    if (Number.isFinite(value)) n = value;
+    if (!reversed || i === 0) out.set(item, n);
+    n += reversed ? -1 : 1;
+  });
+  ctx.ordinals.set(ol, out);
+  return out;
+}
+
+/** The state of the item's own checkbox, not one inside a nested list: true, false, or null without one. */
+function taskState(li: Element): boolean | null {
+  const stack: ChildNode[] = [...li.children].reverse();
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (!(node instanceof Element) || node.name === 'ul' || node.name === 'ol') continue;
+    if (node.name === 'input' && (node.attribs['type'] ?? '').toLowerCase() === 'checkbox') return node.attribs['checked'] !== undefined;
+    for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]!);
+  }
+  return null;
+}
+
 function handleListItem(ctx: Ctx, li: Element): void {
   // The item's own inline text (and inline text of a leading <p>) becomes one listItem block; nested lists
   // and other block children recurse.
+  const info = listInfo(ctx, li);
   let run = newRun();
   let ownFlushed = false;
   for (const child of li.children) {
@@ -286,7 +370,7 @@ function handleListItem(ctx: Ctx, li: Element): void {
         continue;
       }
       if (!ownFlushed) {
-        flushRun(ctx, run, li, 'listItem');
+        flushRun(ctx, run, li, 'listItem', info);
         ownFlushed = true;
         run = newRun();
       } else {
@@ -298,17 +382,17 @@ function handleListItem(ctx: Ctx, li: Element): void {
       inlineText(ctx, child, run);
     }
   }
-  flushRun(ctx, run, li, ownFlushed ? 'paragraph' : 'listItem');
+  flushRun(ctx, run, li, ownFlushed ? 'paragraph' : 'listItem', info);
 }
 
 /** Read only recognized direct line wrappers; never discard extra non-whitespace code children. */
 function starlightCode(pre: Element): string {
-  if (!ancestor(pre, (node) => hasClass(node, 'expressive-code'))) return textContent(pre);
+  if (!ancestor(pre, (node) => hasClass(node, 'expressive-code'))) return visibleCode(pre.children);
   const meaningful = pre.children.filter((node) => !(node instanceof Text && !node.data.trim()));
   const code = meaningful.length === 1 ? meaningful[0] : null;
-  if (!(code instanceof Element) || code.name !== 'code') return textContent(pre);
+  if (!(code instanceof Element) || code.name !== 'code') return visibleCode(pre.children);
   const lines = code.children.filter((node) => !(node instanceof Text && !node.data.trim()));
-  if (lines.length === 0 || !lines.every((node) => node instanceof Element && node.name === 'div' && hasClass(node, 'ec-line'))) return textContent(pre);
+  if (lines.length === 0 || !lines.every((node) => node instanceof Element && node.name === 'div' && hasClass(node, 'ec-line'))) return visibleCode(pre.children);
   // A gutter (line numbers from a plugin) sits beside the code as a direct child of the line; it is not code text.
   const gutter = (node: ChildNode) => node instanceof Element && node.name === 'div' && hasClass(node, 'gutter');
   // starlight-llms-txt prefixes + or - to ins and del lines when the block has a language other than diff. The page
@@ -323,14 +407,14 @@ function starlightCode(pre: Element): string {
  * span that is not an indent span; a line whose first such span does not start with text gets no marker. */
 function starlightLineText(children: ChildNode[], line: Element, diffMarkers: boolean): string {
   const inserted = hasClass(line, 'ins');
-  if (!diffMarkers || !(inserted || hasClass(line, 'del'))) return textContent(children);
+  if (!diffMarkers || !(inserted || hasClass(line, 'del'))) return visibleCode(children);
   const target = firstNonIndentSpan(children)?.children[0];
-  if (!(target instanceof Text)) return textContent(children);
+  if (!(target instanceof Text)) return visibleCode(children);
   let out = '';
   const collect = (nodes: ChildNode[]): void => {
     for (const node of nodes) {
       if (node instanceof Text) out += (node === target ? (inserted ? '+' : '-') : '') + node.data;
-      else if (node instanceof Element) collect(node.children);
+      else if (node instanceof Element && !hiddenAttr(node)) collect(node.children);
     }
   };
   collect(children);
@@ -398,19 +482,37 @@ function handleStarlightTabs(ctx: Ctx, component: Element): void {
     const label = newRun();
     for (const child of tab.children) inlineText(ctx, child, label);
     if (!strictNormalize(label.text)) throw new HtmlExtractError('Starlight tab label is empty.');
-    flushRun(ctx, label, tab, 'listItem');
+    flushRun(ctx, label, tab, 'listItem', { ordered: false, depth: ctx.listBase, checked: null });
+    ctx.listBase++;
     walk(ctx, panel);
+    ctx.listBase--;
   }
 }
 
 function handleTable(ctx: Ctx, table: Element): void {
-  const rows = selectAll('tr', table).filter((tr) => closestTable(tr) === table);
+  // The caption is content: a paragraph before the table, the way a Markdown table's title has to be written. Up to
+  // 0.2.12 it was dropped with its text, numbers and links (found by an outside review 2026-09-26).
+  for (const child of table.children) {
+    if (child instanceof Element && child.name === 'caption' && !isSkipped(child, ctx.root, ctx.profile)) {
+      const run = newRun();
+      for (const c of child.children) inlineText(ctx, c, run);
+      flushRun(ctx, run, child);
+    }
+  }
+  // Hidden rows, row groups and cells are skipped like any other hidden element (0.2.13; up to 0.2.12 they were read).
+  const shown = (tr: Element): boolean => {
+    for (let cur: ParentNode | null = tr; cur instanceof Element && cur !== table; cur = cur.parent) {
+      if (isSkipped(cur, ctx.root, ctx.profile)) return false;
+    }
+    return true;
+  };
+  const rows = selectAll('tr', table).filter((tr) => closestTable(tr) === table && shown(tr));
   const cells: string[][] = [];
   const links: Link[] = [];
   for (const tr of rows) {
     const row: string[] = [];
     for (const cell of tr.children) {
-      if (cell instanceof Element && (cell.name === 'td' || cell.name === 'th')) {
+      if (cell instanceof Element && (cell.name === 'td' || cell.name === 'th') && !isSkipped(cell, ctx.root, ctx.profile)) {
         const run = newRun();
         for (const c of cell.children) inlineText(ctx, c, run);
         row.push(strictNormalize(run.text));
@@ -433,7 +535,15 @@ function closestTable(el: Element): Element | null {
   return null;
 }
 
-function pickRoot(doc: Document, selector: string | undefined, notes: string[]): { root: Element; strategy: string; confidence: 'high' | 'low' } {
+/** Whether the page hides an element: it or an ancestor carries hidden or aria-hidden, or sits in a template. */
+function hiddenInPage(el: Element): boolean {
+  for (let cur: ParentNode | null = el; cur instanceof Element; cur = cur.parent) {
+    if (hiddenAttr(cur) || cur.name === 'template') return true;
+  }
+  return false;
+}
+
+function pickRoot(doc: Document, selector: string | undefined, notes: string[], issues: ExtractionIssue[]): { root: Element; strategy: string; confidence: 'high' | 'low' } {
   if (selector) {
     let matches: Element[];
     try {
@@ -445,11 +555,26 @@ function pickRoot(doc: Document, selector: string | undefined, notes: string[]):
     if (matches.length > 1) notes.push(`Selector "${selector}" matched ${matches.length} elements; the first in document order was used.`);
     return { root: matches[0] as Element, strategy: `selector:${selector}`, confidence: 'high' };
   }
+  // A candidate the page hides is not its main content. Up to 0.2.12 the first candidate was taken as it was, so a
+  // hidden <main> before the visible one was compared in its place and the visible content not at all. Candidates
+  // that do not sit inside one another are separate content, and only the first is compared, so that is a warning;
+  // one nested inside another (an <article> inside an <article>) is part of it (found by an outside review 2026-09-26).
   for (const tag of ['main', 'article', '[role=main]']) {
     const matches = (selectAll(tag, doc.children) as AnyNode[]).filter((n): n is Element => n instanceof Element);
-    if (matches.length >= 1) {
-      if (matches.length > 1) notes.push(`${matches.length} <${tag}> elements found; the first in document order was used.`);
-      return { root: matches[0] as Element, strategy: tag, confidence: 'high' };
+    const visible = matches.filter((el) => !hiddenInPage(el));
+    if (matches.length > visible.length) notes.push(`${matches.length - visible.length} hidden <${tag}> element(s) were not used as the main content.`);
+    if (visible.length >= 1) {
+      const set = new Set(visible);
+      const outer = visible.filter((el) => {
+        for (let cur: ParentNode | null = el.parent; cur instanceof Element; cur = cur.parent) if (set.has(cur)) return false;
+        return true;
+      });
+      if (outer.length > 1) {
+        issues.push({ code: 'EXTRACTION_MULTIPLE_ROOTS', severity: 'warning', message: `${outer.length} visible <${tag}> elements that do not contain one another were found; only the first in document order was compared. Use --selector to choose the content.` });
+      } else if (visible.length > 1) {
+        notes.push(`${visible.length} <${tag}> elements found, nested inside the first; the first was used.`);
+      }
+      return { root: outer[0] as Element, strategy: tag, confidence: 'high' };
     }
   }
   const body = selectOne('body', doc.children) as AnyNode | null;
@@ -469,21 +594,22 @@ export function extractHtml(source: string, options: HtmlExtractOptions = {}): E
   const depth = nestingDepth(doc);
   if (depth > maxDepth) throw new HtmlExtractError(`HTML nesting depth ${depth} exceeds the limit of ${maxDepth} levels; the comparison was not run.`);
   const notes: string[] = [];
+  const issues: ExtractionIssue[] = [];
   const baseEl = selectOne('base[href]', doc.children) as AnyNode | null;
   let base: string | null = options.baseUrl ?? null;
   if (baseEl instanceof Element && baseEl.attribs['href']) {
     const resolved = resolveHref(baseEl.attribs['href'], base);
     if (resolved) base = resolved;
   }
-  const { root, strategy, confidence } = pickRoot(doc, options.selector, notes);
+  const { root, strategy, confidence } = pickRoot(doc, options.selector, notes, issues);
   const lineStarts = [0];
   for (let i = 0; i < source.length; i++) if (source.charCodeAt(i) === 10) lineStarts.push(i + 1);
   if (profile === 'starlight') notes.push('Starlight profile: all associated tab panels are compared, including inactive panels; Expressive Code line boundaries and aside titles are retained.');
-  const ctx: Ctx = { profile, base, source, lineStarts, blocks: [], notes, root };
+  const ctx: Ctx = { profile, base, source, lineStarts, blocks: [], notes, root, listBase: 0, ordinals: new Map() };
   // A selector that picks a heading, list item, table or pre keeps that block type, so the root goes
   // through handleBlock. Every other root is read as a container, a list included: handleBlock's list
   // branch reads only <li> children, and a root list would lose any other content it holds.
   if (HEADING_RE.test(root.name) || root.name === 'li' || root.name === 'table' || root.name === 'pre') handleBlock(ctx, root);
   else walk(ctx, root);
-  return { blocks: ctx.blocks, strategy: profile === 'generic' ? strategy : `${strategy};profile:starlight`, confidence, notes, issues: [] };
+  return { blocks: ctx.blocks, strategy: profile === 'generic' ? strategy : `${strategy};profile:starlight`, confidence, notes, issues };
 }

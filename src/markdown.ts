@@ -4,7 +4,7 @@ import { fromMarkdown } from 'mdast-util-from-markdown';
 import { gfm } from 'micromark-extension-gfm';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import type { Nodes, Parent, PhrasingContent, Root, RootContent, Table } from 'mdast';
-import type { Block, Extraction, ExtractionIssue, Link } from './model.js';
+import type { Block, Extraction, ExtractionIssue, Link, ListInfo } from './model.js';
 import { extractHtml, MAX_NESTING_DEPTH } from './html.js';
 import { parseDocument } from 'htmlparser2';
 import { Element, Text, type ChildNode } from 'domhandler';
@@ -45,6 +45,8 @@ interface Ctx {
   issues: ExtractionIssue[];
   /** Link reference definitions by normalized identifier (first definition wins, per CommonMark). */
   definitions: Map<string, { url: string; title: string | null }>;
+  /** Nesting level of the list being read, 0 at the top. */
+  listDepth: number;
 }
 
 interface InlineRun {
@@ -80,6 +82,7 @@ function parseInlineTag(value: string): InlineTag | null {
  * text, <br> a space, everything else is dropped while the text between tags stays.
  */
 function inlineChildren(ctx: Ctx, children: PhrasingContent[], run: InlineRun, line?: number): void {
+  let closes: Map<number, number> | null = null;
   for (let i = 0; i < children.length; i++) {
     const node = children[i]!;
     if (node.type !== 'html') {
@@ -88,6 +91,20 @@ function inlineChildren(ctx: Ctx, children: PhrasingContent[], run: InlineRun, l
     }
     const tag = parseInlineTag(node.value);
     if (!tag) continue; // comment or unparsable fragment: no visible content
+    // A hidden inline element hides its text in a reader that renders the HTML, as the same attribute does on the
+    // HTML side. Up to 0.2.12 only the tags were dropped and the text between them stayed (found by an outside review
+    // 2026-09-26). Its content up to the matching closing tag is left out; without one the tag is reported.
+    if (!tag.closing && (tag.attribs['hidden'] !== undefined || tag.attribs['aria-hidden'] === 'true')) {
+      if (VOID_TAGS.has(tag.name) || /\/>\s*$/.test(node.value)) continue;
+      closes ??= closingTags(children);
+      const end = closes.get(i) ?? -1;
+      if (end < 0) {
+        ctx.issues.push({ code: 'MARKDOWN_INLINE_HTML_UNSUPPORTED', severity: 'warning', message: `A hidden inline <${tag.name}> has no matching </${tag.name}> in the same paragraph; its text was compared as visible.`, line: node.position?.start.line ?? line, excerpt: excerpt(node.value) });
+        continue;
+      }
+      i = end;
+      continue;
+    }
     if (tag.closing) {
       if (tag.name === 'a') ctx.issues.push({ code: 'MARKDOWN_INLINE_HTML_UNSUPPORTED', severity: 'warning', message: 'A closing </a> without an opening <a> in the same paragraph; the inline HTML structure could not be resolved reliably.', line: node.position?.start.line ?? line, excerpt: excerpt(node.value) });
       continue;
@@ -129,6 +146,32 @@ function inlineChildren(ctx: Ctx, children: PhrasingContent[], run: InlineRun, l
     run.text += inner.text;
     i = end;
   }
+}
+
+const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
+
+/**
+ * For every opening tag among the inline nodes of a paragraph, the index of its matching closing tag, counting
+ * nested tags of the same name; an opening tag without one is absent. One pass with a stack per tag name, computed
+ * once per paragraph. The first version scanned forward from each hidden tag, so a paragraph with 20 000 unclosed
+ * hidden tags took two minutes (found by an independent review before 0.2.13 was released).
+ */
+function closingTags(children: PhrasingContent[]): Map<number, number> {
+  const out = new Map<number, number>();
+  const open = new Map<string, number[]>();
+  children.forEach((c, j) => {
+    if (c.type !== 'html') return;
+    const t = parseInlineTag(c.value);
+    if (!t) return;
+    const stack = open.get(t.name) ?? [];
+    if (!t.closing) {
+      stack.push(j);
+      open.set(t.name, stack);
+    } else if (stack.length > 0) {
+      out.set(stack.pop()!, j);
+    }
+  });
+  return out;
 }
 
 function inline(ctx: Ctx, node: PhrasingContent | Nodes, run: InlineRun): void {
@@ -220,7 +263,7 @@ function handleTable(ctx: Ctx, table: Table): void {
   push(ctx, { type: 'table', text: strictNormalize(text), cells, links }, table);
 }
 
-function handle(ctx: Ctx, node: RootContent, listItem = false): void {
+function handle(ctx: Ctx, node: RootContent, listItem?: ListInfo): void {
   switch (node.type) {
     case 'heading': {
       const run: InlineRun = { text: '', links: [] };
@@ -233,7 +276,7 @@ function handle(ctx: Ctx, node: RootContent, listItem = false): void {
       const run: InlineRun = { text: '', links: [] };
       inlineChildren(ctx, node.children, run, node.position?.start.line);
       const text = strictNormalize(run.text);
-      if (text !== '') push(ctx, { type: listItem ? 'listItem' : 'paragraph', text, links: run.links }, node);
+      if (text !== '') push(ctx, { type: listItem ? 'listItem' : 'paragraph', text, links: run.links, ...(listItem ? { list: listItem } : {}) }, node);
       return;
     }
     case 'code': {
@@ -244,30 +287,50 @@ function handle(ctx: Ctx, node: RootContent, listItem = false): void {
     case 'table':
       handleTable(ctx, node);
       return;
-    case 'list':
+    case 'list': {
+      // A Markdown list shows its start number and counts on; its items carry the list kind, the nesting level and
+      // the task state for the comparison (0.2.13).
+      let n = typeof node.start === 'number' ? node.start : 1;
       for (const item of node.children) {
+        const info: ListInfo = { ordered: node.ordered === true, depth: ctx.listDepth, checked: typeof item.checked === 'boolean' ? item.checked : null };
+        if (node.ordered === true) info.ordinal = n;
+        n++;
+        ctx.listDepth++;
         let first = true;
         for (const child of item.children) {
-          handle(ctx, child, first && child.type === 'paragraph');
+          handle(ctx, child, first && child.type === 'paragraph' ? info : undefined);
           first = false;
         }
-        if (item.children.length === 0) continue;
+        ctx.listDepth--;
       }
       return;
+    }
     case 'blockquote':
       for (const c of node.children) handle(ctx, c);
       return;
     case 'html':
       handleRawHtml(ctx, node.value, node.position?.start.line);
       return;
+    case 'footnoteDefinition':
+      // Footnotes are not compared: an HTML page renders them as a numbered list with back links, which would not
+      // read as the Markdown definitions. Up to 0.2.12 a definition was dropped without a trace, so a footnote added
+      // to the Markdown passed strict mode (found by an outside review 2026-09-26). It is now a warning with its text.
+      ctx.issues.push({ code: 'MARKDOWN_FOOTNOTE_NOT_COMPARED', severity: 'warning', message: `Footnote [^${node.identifier}] is not compared; its text, numbers and links were left out of the comparison.`, line: node.position?.start.line, excerpt: excerpt(footnoteText(node)) });
+      return;
     case 'thematicBreak':
     case 'definition':
-    case 'footnoteDefinition':
     case 'yaml':
       return;
     default:
       if ('children' in node) for (const c of (node as Parent).children) handle(ctx, c as RootContent);
   }
+}
+
+/** Plain text of a footnote definition for the report excerpt. */
+function footnoteText(node: Nodes): string {
+  if ('value' in node && typeof (node as { value?: unknown }).value === 'string') return (node as { value: string }).value;
+  if ('children' in node) return (node as Parent).children.map((c) => footnoteText(c as Nodes)).join(' ');
+  return '';
 }
 
 /** A raw HTML block in Markdown is parsed with the HTML extractor so its content takes part in the
@@ -367,7 +430,7 @@ export function extractMarkdown(source: string, options: MarkdownExtractOptions 
   const maxDepth = options.maxDepth ?? MAX_NESTING_DEPTH;
   const depth = treeDepth(tree);
   if (depth > maxDepth) throw new MarkdownExtractError(`Markdown nesting depth ${depth} exceeds the limit of ${maxDepth} levels; the comparison was not run.`);
-  const ctx: Ctx = { base: options.baseUrl ?? null, source: fm.text, blocks: [], notes: [], issues: [], definitions: collectDefinitions(tree) };
+  const ctx: Ctx = { base: options.baseUrl ?? null, source: fm.text, blocks: [], notes: [], issues: [], definitions: collectDefinitions(tree), listDepth: 0 };
   const fmExcerpt = () => excerpt(fm.body.replace(/\s+/g, ' '));
   if (mode === 'strip' && fm.skippedLines > 0) {
     ctx.notes.push(`Front matter (${fm.skippedLines} lines) was stripped as requested (--front-matter strip).`);

@@ -237,11 +237,13 @@ describe('F09: one block with many numbers or links', () => {
     assert.ok(ms < 1000, `${ms.toFixed(0)} ms`);
   });
 
-  it('20 000 same-text links compare in well under a second, whether the targets match in reverse order or not at all', () => {
+  // 0.2.13 (F08): links with the same text pair in order when both sides have as many, so reversed targets are
+  // 20 000 changed targets now, where 0.2.12 found none.
+  it('20 000 same-text links compare in well under a second, whether the targets come in reverse order or differ', () => {
     const make = (dir: string) => Array.from({ length: 20000 }, (_, i) => ({ text: 'download', rawHref: `/${dir}/${i}`, resolved: `https://example.test/${dir}/${i}` }));
     const links = make('f');
     const text = links.map(() => 'download').join(' ');
-    for (const [other, changed] of [[[...links].reverse(), 0], [make('g').reverse(), 20000]] as const) {
+    for (const [other, changed] of [[[...links].reverse(), 20000], [make('g').reverse(), 20000]] as const) {
       const t0 = performance.now();
       const r = compare(extraction(text, links), extraction(text, [...other]));
       const ms = performance.now() - t0;

@@ -1,12 +1,14 @@
 // The indexed link pairing and the counted number diff of 0.2.12 must give the same answer as the scans they
 // replaced (outside review 2026-09-26, F09). The old code is kept here as the reference and compared on random
-// input, the way test/linear.test.ts does for the redaction.
+// input, the way test/linear.test.ts does for the redaction. 0.2.13 changed the pairing on purpose (F08: links whose
+// text occurs equally often on both sides pair in order; F11: what is left pairs by loose text), and the reference
+// carries both as plain loops around the old scan.
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { diffNumbers, pairLinks } from '../src/compare.js';
 import type { Link } from '../src/model.js';
-import { relativeHrefRelation } from '../src/normalize.js';
+import { looseNormalize, relativeHrefRelation } from '../src/normalize.js';
 
 function oldSameTarget(a: Link, b: Link): boolean {
   if (a.resolved !== null && b.resolved !== null) return a.resolved === b.resolved;
@@ -15,19 +17,38 @@ function oldSameTarget(a: Link, b: Link): boolean {
 }
 
 function oldPairLinks(hLinks: Link[], mLinks: Link[]) {
+  const n = (links: Link[], text: string) => links.filter((l) => l.text === text).length;
   const remaining = mLinks.map((l, i) => ({ l, i }));
   const pairs: Array<[number, number]> = [];
-  const missing: number[] = [];
+  let missing: number[] = [];
   hLinks.forEach((hl, hi) => {
-    let idx = remaining.findIndex((r) => r.l.text === hl.text && oldSameTarget(hl, r.l));
-    if (idx < 0) idx = remaining.findIndex((r) => r.l.text === hl.text);
+    let idx: number;
+    if (n(hLinks, hl.text) === n(mLinks, hl.text)) {
+      // 0.2.13 step 1: the k-th link with this text pairs with the k-th.
+      const k = hLinks.slice(0, hi).filter((l) => l.text === hl.text).length;
+      const target = mLinks.map((l, i) => ({ l, i })).filter((x) => x.l.text === hl.text)[k]!.i;
+      idx = remaining.findIndex((r) => r.i === target);
+    } else {
+      idx = remaining.findIndex((r) => r.l.text === hl.text && oldSameTarget(hl, r.l));
+      if (idx < 0) idx = remaining.findIndex((r) => r.l.text === hl.text);
+    }
     if (idx < 0) {
       missing.push(hi);
       return;
     }
     pairs.push([hi, remaining.splice(idx, 1)[0]!.i]);
   });
-  return { pairs, missing, added: remaining.map((r) => r.i) };
+  // 0.2.13 step 3: what is left pairs by loose text, in order.
+  const still: number[] = [];
+  for (const hi of missing) {
+    const k = looseNormalize(hLinks[hi]!.text);
+    const idx = k === '' ? -1 : remaining.findIndex((r) => looseNormalize(r.l.text) === k);
+    if (idx < 0) still.push(hi);
+    else pairs.push([hi, remaining.splice(idx, 1)[0]!.i]);
+  }
+  missing = still;
+  pairs.sort((x, y) => x[0] - y[0]);
+  return { pairs, missing, added: remaining.map((r) => r.i).sort((x, y) => x - y) };
 }
 
 function oldDiffNumbers(a: string[], b: string[]): { before: string[]; after: string[] } | null {
@@ -63,7 +84,7 @@ function prng(seed: number): () => number {
 
 // Link shapes that exercise every branch of sameTarget: resolved and unresolved, raw hrefs that differ only in
 // surrounding space, relative forms that are the same under every base (./a and a) and forms that are not.
-const TEXTS = ['a', 'b', 'Download'];
+const TEXTS = ['a', 'b', 'Download', 'download', 'DOWNLOAD!', '***'];
 const SHAPES: Array<Omit<Link, 'text'>> = [
   { rawHref: '/x', resolved: 'https://e.test/x' },
   { rawHref: ' /x ', resolved: 'https://e.test/x' },

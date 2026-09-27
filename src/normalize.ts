@@ -4,7 +4,12 @@
 
 const NBSP = /[\u00a0\u2007\u202f]/g;
 const WS = /[ \t\r\n\f\v]+/g;
-const ZERO_WIDTH = /[\u200b-\u200d\ufeff\u00ad]/g;
+// Zero width space, byte order mark and soft hyphen: invisible artefacts of editing and export. Up to 0.2.12 the
+// zero width joiner and non-joiner went with them, and two texts that render differently, such as an emoji
+// sequence with and without its joiner, compared equal (found by an outside review 2026-09-26). They stay in the
+// strict text now, and JOINERS takes them out of the loose text, so a difference in them alone is a minor change.
+const ZERO_WIDTH = /[\u200b\ufeff\u00ad]/g;
+const JOINERS = /[\u200c\u200d]/g;
 
 export function strictNormalize(text: string): string {
   return text
@@ -17,6 +22,7 @@ export function strictNormalize(text: string): string {
 
 export function looseNormalize(text: string): string {
   return strictNormalize(text)
+    .replace(JOINERS, '')
     .toLowerCase()
     // Map typographic quotes and dashes to plain forms, for alignment and for classifying minor text differences.
     .replace(/[\u2018\u2019\u201a\u2032]/g, "'")

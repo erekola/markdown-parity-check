@@ -2,7 +2,7 @@
 
 import { align, UNCERTAIN_THRESHOLD, type AlignmentLimits, type Pair } from './align.js';
 import type { Block, Extraction, Finding, FindingSide, Link } from './model.js';
-import { excerpt, hrefDifference, maskHref, redactText, relativeHrefRelation, visibleNumbers } from './normalize.js';
+import { excerpt, hrefDifference, looseNormalize, maskHref, redactText, relativeHrefRelation, visibleNumbers } from './normalize.js';
 
 export interface Coverage {
   htmlBlocks: number;
@@ -78,12 +78,18 @@ const linkText = (l: Link, other?: Link) => (l.masked || other?.masked ? '***' :
 const linkHref = (l: Link, href: string) => (l.masked ? '***' : maskHref(href));
 
 /**
- * Pairs the HTML block's links with the Markdown block's. Each HTML link takes the first unused Markdown link, in
- * document order, that has the same text and the same target, or else the first unused one with the same text.
- * Up to 0.2.11 both searches scanned the whole remaining list, so one block with 20 000 links took more than a
- * second (found by an outside review 2026-09-26). Now the Markdown links are indexed by text and, for a resolved
- * HTML link, by text and target, which gives the same pairs; an unresolved HTML link still scans the links that
- * share its text, because relativeHrefRelation compares two references and has no key of its own.
+ * Pairs the HTML block's links with the Markdown block's, in three steps.
+ *
+ * 1. Links whose text occurs equally often on both sides pair in document order: the first "download" with the
+ * first "download". Up to 0.2.12 every link took any unused link with the same text and target, so two links with
+ * the same text and swapped targets passed with no finding (0.2.13, found by an outside review 2026-09-26).
+ * 2. Every other link takes the first unused Markdown link, in document order, that has the same text and the same
+ * target, or else the first unused one with the same text. The Markdown links are indexed by text and, for a
+ * resolved HTML link, by text and target; an unresolved HTML link scans the links that share its text, because
+ * relativeHrefRelation compares two references and has no key of its own (0.2.12, where the old scans of the
+ * whole list made one block with 20 000 links take more than a second).
+ * 3. What is still unpaired pairs by loosely normalized text, the same way as step 1 and then in order, so a link
+ * whose text differs only in case or punctuation is one changed text and not a missing and an added link (0.2.13).
  * @internal Exported for test/compare-links.test.ts.
  */
 export function pairLinks(hLinks: Link[], mLinks: Link[]): { pairs: Array<[number, number]>; missing: number[]; added: number[] } {
@@ -109,11 +115,23 @@ export function pairLinks(hLinks: Link[], mLinks: Link[]): { pairs: Array<[numbe
     if (l.resolved !== null) add(key('resolved', l.text, l.resolved), i);
     else add(key('raw-unresolved', l.text, l.rawHref.trim()), i);
   });
+  const count = (links: Link[]) => {
+    const m = new Map<string, number>();
+    for (const l of links) m.set(l.text, (m.get(l.text) ?? 0) + 1);
+    return m;
+  };
+  const hCount = count(hLinks);
+  const mCount = count(mLinks);
+  const seenInH = new Map<string, number>();
   const pairs: Array<[number, number]> = [];
-  const missing: number[] = [];
+  let missing: number[] = [];
   hLinks.forEach((hl, hi) => {
     let idx = -1;
-    if (hl.resolved !== null) {
+    const k = seenInH.get(hl.text) ?? 0;
+    seenInH.set(hl.text, k + 1);
+    if (hCount.get(hl.text) === mCount.get(hl.text)) {
+      idx = lists.get(key('text', hl.text))![k]!;
+    } else if (hl.resolved !== null) {
       // sameTarget: a resolved Markdown link with the same resolved href, or an unresolved one with the same raw href.
       const a = first(key('resolved', hl.text, hl.resolved));
       const b = first(key('raw-unresolved', hl.text, hl.rawHref.trim()));
@@ -135,6 +153,37 @@ export function pairLinks(hLinks: Link[], mLinks: Link[]): { pairs: Array<[numbe
     used[idx] = true;
     pairs.push([hi, idx]);
   });
+  // Step 3: the links still unpaired, by loosely normalized text.
+  const looseLists = new Map<string, number[]>();
+  used.forEach((u, i) => {
+    const k = u ? '' : looseNormalize(mLinks[i]!.text);
+    if (k === '') return;
+    const list = looseLists.get(k);
+    if (list) list.push(i);
+    else looseLists.set(k, [i]);
+  });
+  const looseMissing = new Map<string, number>();
+  for (const hi of missing) {
+    const k = looseNormalize(hLinks[hi]!.text);
+    if (k !== '') looseMissing.set(k, (looseMissing.get(k) ?? 0) + 1);
+  }
+  const looseHeads = new Map<string, number>();
+  const stillMissing: number[] = [];
+  for (const hi of missing) {
+    const k = looseNormalize(hLinks[hi]!.text);
+    const list = k === '' ? undefined : looseLists.get(k);
+    const n = looseHeads.get(k) ?? 0;
+    if (!list || n >= list.length) {
+      stillMissing.push(hi);
+      continue;
+    }
+    // Equal counts pair in order and unequal counts take the next in order, so both are the next unused link.
+    looseHeads.set(k, n + 1);
+    used[list[n]!] = true;
+    pairs.push([hi, list[n]!]);
+  }
+  missing = stillMissing;
+  pairs.sort((x, y) => x[0] - y[0]);
   const added: number[] = [];
   used.forEach((u, i) => {
     if (!u) added.push(i);
@@ -180,6 +229,30 @@ function sameTarget(a: Link, b: Link): boolean {
   if (a.resolved !== null && b.resolved !== null) return a.resolved === b.resolved;
   if (a.resolved === null && b.resolved === null) return relativeHrefRelation(a.rawHref, b.rawHref) === 'same';
   return a.rawHref.trim() === b.rawHref.trim();
+}
+
+/**
+ * Where a list item sits in its list (0.2.13): the list kind and the nesting level are warnings, a changed item
+ * number and a changed task state are errors, because the reader sees a different number or a different state.
+ */
+function compareListItems(out: Finding[], h: Block, m: Block): void {
+  const a = h.list;
+  const b = m.list;
+  if (!a || !b) return;
+  const kind = (o: boolean) => (o ? 'numbered' : 'bulleted');
+  if (a.ordered !== b.ordered) {
+    out.push({ code: 'LIST_KIND_CHANGED', severity: 'warning', direction: 'both', message: `The list item is in a ${kind(a.ordered)} list in the HTML and a ${kind(b.ordered)} list in the Markdown.`, html: side(h), markdown: side(m), before: kind(a.ordered), after: kind(b.ordered) });
+  } else if (a.ordinal !== undefined && b.ordinal !== undefined && a.ordinal !== b.ordinal) {
+    out.push({ code: 'LIST_NUMBER_CHANGED', severity: 'error', direction: 'both', message: `List item number differs: ${a.ordinal} in the HTML, ${b.ordinal} in the Markdown.`, html: side(h), markdown: side(m), before: String(a.ordinal), after: String(b.ordinal) });
+  }
+  if (a.depth !== b.depth) {
+    out.push({ code: 'LIST_NESTING_CHANGED', severity: 'warning', direction: 'both', message: `List nesting level differs: level ${a.depth + 1} in the HTML, level ${b.depth + 1} in the Markdown.`, html: side(h), markdown: side(m), before: String(a.depth + 1), after: String(b.depth + 1) });
+  }
+  if (a.checked !== b.checked) {
+    const state = (c: boolean | null) => (c === null ? 'no checkbox' : c ? 'checked' : 'unchecked');
+    const one = a.checked === null || b.checked === null;
+    out.push({ code: 'LIST_TASK_CHANGED', severity: one ? 'warning' : 'error', direction: 'both', message: `Task state differs: ${state(a.checked)} in the HTML, ${state(b.checked)} in the Markdown.`, html: side(h), markdown: side(m), before: state(a.checked), after: state(b.checked) });
+  }
 }
 
 function compareTables(out: Finding[], h: Block, m: Block): void {
@@ -244,6 +317,7 @@ function comparePair(out: Finding[], p: Pair, h: Block, m: Block, bothBases: boo
       out.push({ code: 'TEXT_CHANGED', severity: 'error', direction: 'both', message: `The ${label(h)} text differs.`, html: side(h), markdown: side(m), before: excerpt(h.text), after: excerpt(m.text) });
     }
   }
+  if (h.type === 'listItem' && m.type === 'listItem') compareListItems(out, h, m);
   compareLinks(out, h, m, bothBases);
 }
 

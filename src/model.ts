@@ -35,9 +35,22 @@ export interface Block {
   cells?: string[][];
   /** Code content after normalizeCode: line endings normalized to LF and trailing newlines removed. Only for type 'code'. */
   code?: string;
+  /** Where a list item sits in its list. Only for type 'listItem' (0.2.13). */
+  list?: ListInfo;
   links: Link[];
   numbers: string[];
   location: Location;
+}
+
+export interface ListInfo {
+  /** A numbered list (ol, or a Markdown list with numbers). */
+  ordered: boolean;
+  /** Nesting level, 0 for a top-level list. */
+  depth: number;
+  /** The number the item shows, only in a numbered list: the list start or the item value, counted on. */
+  ordinal?: number;
+  /** Task item state: true checked, false unchecked, null when the item has no checkbox. */
+  checked: boolean | null;
 }
 
 export interface Extraction {
