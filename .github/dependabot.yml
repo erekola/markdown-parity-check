@@ -10,3 +10,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # @types/node follows the lowest Node.js version the package supports (engines node >=22),
+      # so the compiler flags any use of an API that Node.js 22 does not have.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
