@@ -8,7 +8,7 @@ import type { Block, Extraction, ExtractionIssue, Link } from './model.js';
 import { extractHtml, MAX_NESTING_DEPTH } from './html.js';
 import { parseDocument } from 'htmlparser2';
 import { Element, Text, type ChildNode } from 'domhandler';
-import { excerpt, extractNumbers, looseNormalize, normalizeCode, resolveHref, strictNormalize } from './normalize.js';
+import { excerpt, extractNumbers, insideHiddenUrlPart, looseNormalize, normalizeCode, resolveHref, strictNormalize } from './normalize.js';
 
 export interface MarkdownExtractOptions {
   baseUrl?: string | null;
@@ -38,6 +38,8 @@ function treeDepth(tree: Root): number {
 
 interface Ctx {
   base: string | null;
+  /** The text handed to the parser, which the node offsets point into. */
+  source: string;
   blocks: Block[];
   notes: string[];
   issues: ExtractionIssue[];
@@ -168,7 +170,12 @@ function inline(ctx: Ctx, node: PhrasingContent | Nodes, run: InlineRun): void {
     case 'link': {
       const inner: InlineRun = { text: '', links: [] };
       inlineChildren(ctx, node.children, inner, node.position?.start.line);
-      run.links.push({ text: strictNormalize(inner.text), rawHref: node.url, resolved: resolveHref(node.url, ctx.base) });
+      const link: Link = { text: strictNormalize(inner.text), rawHref: node.url, resolved: resolveHref(node.url, ctx.base) };
+      // A GFM literal autolink starts with neither [ nor <. One that GFM found inside a hidden part of another URL
+      // is compared as usual but shown masked (0.2.12).
+      const at = node.position?.start.offset;
+      if (at !== undefined && ctx.source[at] !== '[' && ctx.source[at] !== '<' && insideHiddenUrlPart(ctx.source, at)) link.masked = true;
+      run.links.push(link);
       run.links.push(...inner.links);
       run.text += inner.text;
       return;
@@ -360,7 +367,7 @@ export function extractMarkdown(source: string, options: MarkdownExtractOptions 
   const maxDepth = options.maxDepth ?? MAX_NESTING_DEPTH;
   const depth = treeDepth(tree);
   if (depth > maxDepth) throw new MarkdownExtractError(`Markdown nesting depth ${depth} exceeds the limit of ${maxDepth} levels; the comparison was not run.`);
-  const ctx: Ctx = { base: options.baseUrl ?? null, blocks: [], notes: [], issues: [], definitions: collectDefinitions(tree) };
+  const ctx: Ctx = { base: options.baseUrl ?? null, source: fm.text, blocks: [], notes: [], issues: [], definitions: collectDefinitions(tree) };
   const fmExcerpt = () => excerpt(fm.body.replace(/\s+/g, ' '));
   if (mode === 'strip' && fm.skippedLines > 0) {
     ctx.notes.push(`Front matter (${fm.skippedLines} lines) was stripped as requested (--front-matter strip).`);

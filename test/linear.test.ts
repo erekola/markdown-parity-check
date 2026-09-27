@@ -3,19 +3,34 @@
 // IPv4 pattern in expandIPv6. The old expressions are kept here as the reference. The new code must give
 // the same answer on every input, and it must stay fast on the inputs that made the old ones slow. 0.2.10 added
 // one alternative on purpose, a protocol-relative authority with user information, and the reference below
-// carries it as its last branch.
+// carries it as its last branch. 0.2.12 lets a URL go on past ( ) " and ' to the end of its token and gives back
+// closing punctuation the sentence owns; the reference carries that as the [^\s<>]* after the alternatives and as
+// the trim loop in oldRedactText, and a special scheme with user information behind any number of separators as the
+// last branch of the expression.
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { expandIPv6, isPublicIPv6 } from '../src/netguard.js';
 import { excerpt, maskHref, redactText } from '../src/normalize.js';
 
-const OLD_URL_IN_TEXT = /(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"'()]+|www\.[^\s<>"'()]+|(?<![\w/])\/[^\s<>"'()]*[?#][^\s<>"'()]*|[^\s<>"'()]*\?[\w%.-]+=[^\s<>"'()]*|[\/\\]{2}[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*)/giu;
+const OLD_URL_IN_TEXT = /(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"'()]+|www\.[^\s<>"'()]+|(?<![\w/])\/[^\s<>"'()]*[?#][^\s<>"'()]*|[^\s<>"'()]*\?[\w%.-]+=[^\s<>"'()]*|[\/\\]{2}[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*|(?:https?|ftp|wss?|file):[\/\\]*[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*)/giu;
+
+const OLD_URL_IN_TOKEN = new RegExp(`(?:${OLD_URL_IN_TEXT.source})[^\\s<>]*`, 'giu');
 
 function oldRedactText(text: string): string {
-  return text.replace(OLD_URL_IN_TEXT, (m) => {
-    const trail = /[.,;:!?]+$/.exec(m)?.[0] ?? '';
-    return maskHref(m.slice(0, m.length - trail.length)) + trail;
+  return text.replace(OLD_URL_IN_TOKEN, (m) => {
+    const open = (m.match(/\(/g) ?? []).length;
+    let close = (m.match(/\)/g) ?? []).length;
+    let end = m.length;
+    for (;;) {
+      const c = m[end - 1];
+      if (c !== undefined && '.,;:!?"\''.includes(c)) end--;
+      else if (c === ')' && close > open) {
+        close--;
+        end--;
+      } else break;
+    }
+    return maskHref(m.slice(0, end)) + m.slice(end);
   });
 }
 
@@ -67,7 +82,7 @@ function randomText(next: () => number, pieces: readonly string[], maxPieces: nu
 // and k, U+0130 and U+0131 do not fold to i), whitespace outside ASCII (U+00A0, U+2028), and surrogates,
 // paired and alone. Written as escapes so the source shows which character each one is.
 const TEXT_PIECES = [
-  'a', 'Z', 'w', 'W', 'www.', 'wWw.', 'http', 'x1', '1', '_', '+', '-', '.', ',', ';', ':', '!', '?', '#', '=', '%', '&', '@', 'u:p@', '\\',
+  'a', 'Z', 'w', 'W', 'www.', 'wWw.', 'http', 'https:', 'HTTP:', 'ftp:', 'ws:', 'file:', 'x1', '1', '_', '+', '-', '.', ',', ';', ':', '!', '?', '#', '=', '%', '&', '@', 'u:p@', '\\',
   '/', '//', '://', 'k=v', '?q=1', ' ', '\t', '\n', '<', '>', '"', "'", '(', ')', '\u00a0', '\u2028', '\u017f', '\u212a',
   '\u0130', '\u0131', '\u00e9', '\ud83d\ude00', '\ud83d', '\ude00',
 ];
@@ -120,6 +135,11 @@ describe('linear-time redaction and address parsing (0.2.2)', () => {
       ['question marks', '?a'.repeat(N / 2)],
       ['many short runs', 'a '.repeat(N / 2)],
       ['url and trailing dots', 'http://a' + '.'.repeat(N) + 'x'],
+      // 0.2.12: special schemes whose authorities end at the next one's separator, and a query value with a long
+      // tail of parentheses.
+      ['special schemes', 'ftp:/https:'.repeat(N / 11)],
+      ['special schemes without separators', 'https:'.repeat(N / 6)],
+      ['query value and parentheses', 'https://a/?q=' + ')('.repeat(N / 2)],
     ];
     for (const [name, text] of inputs) {
       const t0 = performance.now();

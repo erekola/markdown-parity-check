@@ -19,8 +19,17 @@ export interface CompareResult {
   coverage: Coverage;
 }
 
+// The excerpt masks the whole block text before it cuts it, so it is computed once per block. Up to 0.2.11 every
+// finding computed it again, and a block with thousands of link findings did that thousands of times (0.2.12).
+const sides = new WeakMap<Block, FindingSide>();
+
 function side(b: Block): FindingSide {
-  return { line: b.location.line, path: b.location.path, blockIndex: b.location.blockIndex, excerpt: excerpt(b.type === 'code' ? (b.code ?? b.text) : b.text) };
+  let s = sides.get(b);
+  if (!s) {
+    s = { line: b.location.line, path: b.location.path, blockIndex: b.location.blockIndex, excerpt: excerpt(b.type === 'code' ? (b.code ?? b.text) : b.text) };
+    sides.set(b, s);
+  }
+  return { ...s };
 }
 
 function label(b: Block): string {
@@ -36,55 +45,134 @@ function label(b: Block): string {
   }
 }
 
-function diffNumbers(a: string[], b: string[]): { before: string[]; after: string[] } | null {
-  if (a.length === b.length && a.every((v, i) => v === b[i])) return null;
-  const remB = [...b];
-  const before: string[] = [];
+/** The values of a that b does not account for, one for one, in the order of a. */
+function unmatched(a: string[], b: string[]): string[] {
+  const left = new Map<string, number>();
+  for (const v of b) left.set(v, (left.get(v) ?? 0) + 1);
+  const out: string[] = [];
   for (const v of a) {
-    const k = remB.indexOf(v);
-    if (k >= 0) remB.splice(k, 1);
-    else before.push(v);
+    const n = left.get(v) ?? 0;
+    if (n > 0) left.set(v, n - 1);
+    else out.push(v);
   }
-  const remA = [...a];
-  const after: string[] = [];
-  for (const v of b) {
-    const k = remA.indexOf(v);
-    if (k >= 0) remA.splice(k, 1);
-    else after.push(v);
-  }
+  return out;
+}
+
+/**
+ * The numbers each side has that the other lacks, or both lists when the multisets are equal and only the order
+ * differs; null when the lists are equal. Counted with a map: up to 0.2.11 every value was looked up with indexOf
+ * and removed with splice, so one block with 20 000 numbers took two seconds (found by an outside review
+ * 2026-09-26). The result is the same.
+ * @internal Exported for test/compare-links.test.ts.
+ */
+export function diffNumbers(a: string[], b: string[]): { before: string[]; after: string[] } | null {
+  if (a.length === b.length && a.every((v, i) => v === b[i])) return null;
+  const before = unmatched(a, b);
+  const after = unmatched(b, a);
   if (before.length === 0 && after.length === 0) return { before: a, after: b }; // same multiset, different order
   return { before, after };
 }
 
+// What a finding shows of a link. A link GFM made out of a hidden part of a URL shows neither text nor target.
+const linkText = (l: Link, other?: Link) => (l.masked || other?.masked ? '***' : redactText(l.text));
+const linkHref = (l: Link, href: string) => (l.masked ? '***' : maskHref(href));
+
+/**
+ * Pairs the HTML block's links with the Markdown block's. Each HTML link takes the first unused Markdown link, in
+ * document order, that has the same text and the same target, or else the first unused one with the same text.
+ * Up to 0.2.11 both searches scanned the whole remaining list, so one block with 20 000 links took more than a
+ * second (found by an outside review 2026-09-26). Now the Markdown links are indexed by text and, for a resolved
+ * HTML link, by text and target, which gives the same pairs; an unresolved HTML link still scans the links that
+ * share its text, because relativeHrefRelation compares two references and has no key of its own.
+ * @internal Exported for test/compare-links.test.ts.
+ */
+export function pairLinks(hLinks: Link[], mLinks: Link[]): { pairs: Array<[number, number]>; missing: number[]; added: number[] } {
+  const used = new Array<boolean>(mLinks.length).fill(false);
+  const lists = new Map<string, number[]>();
+  const heads = new Map<string, number>();
+  const key = (...parts: string[]) => JSON.stringify(parts);
+  const add = (k: string, i: number) => {
+    const list = lists.get(k);
+    if (list) list.push(i);
+    else lists.set(k, [i]);
+  };
+  const first = (k: string): number => {
+    const list = lists.get(k);
+    if (!list) return -1;
+    let n = heads.get(k) ?? 0;
+    while (n < list.length && used[list[n]!]) n++;
+    heads.set(k, n);
+    return n < list.length ? list[n]! : -1;
+  };
+  mLinks.forEach((l, i) => {
+    add(key('text', l.text), i);
+    if (l.resolved !== null) add(key('resolved', l.text, l.resolved), i);
+    else add(key('raw-unresolved', l.text, l.rawHref.trim()), i);
+  });
+  const pairs: Array<[number, number]> = [];
+  const missing: number[] = [];
+  hLinks.forEach((hl, hi) => {
+    let idx = -1;
+    if (hl.resolved !== null) {
+      // sameTarget: a resolved Markdown link with the same resolved href, or an unresolved one with the same raw href.
+      const a = first(key('resolved', hl.text, hl.resolved));
+      const b = first(key('raw-unresolved', hl.text, hl.rawHref.trim()));
+      idx = a < 0 ? b : b < 0 ? a : Math.min(a, b);
+    } else {
+      const list = lists.get(key('text', hl.text)) ?? [];
+      for (const i of list) {
+        if (!used[i] && sameTarget(hl, mLinks[i]!)) {
+          idx = i;
+          break;
+        }
+      }
+    }
+    if (idx < 0) idx = first(key('text', hl.text));
+    if (idx < 0) {
+      missing.push(hi);
+      return;
+    }
+    used[idx] = true;
+    pairs.push([hi, idx]);
+  });
+  const added: number[] = [];
+  used.forEach((u, i) => {
+    if (!u) added.push(i);
+  });
+  return { pairs, missing, added };
+}
+
 function compareLinks(out: Finding[], h: Block, m: Block, bothBases: boolean): void {
   // Link targets are compared unmasked; every value that reaches a finding goes through maskHref.
-  const remaining: Link[] = [...m.links];
-  for (const hl of h.links) {
-    let idx = remaining.findIndex((ml) => ml.text === hl.text && sameTarget(hl, ml));
-    if (idx < 0) idx = remaining.findIndex((ml) => ml.text === hl.text);
-    if (idx < 0) {
-      out.push({ code: 'LINK_MISSING', severity: 'error', direction: 'html_only', message: `Link "${redactText(hl.text)}" (${maskHref(hl.rawHref)}) is in the HTML block but not in the Markdown block.`, html: side(h), markdown: side(m), before: maskHref(hl.rawHref) });
+  const { pairs, missing, added } = pairLinks(h.links, m.links);
+  const events: Array<{ hi: number; mi: number }> = [...pairs.map(([hi, mi]) => ({ hi, mi })), ...missing.map((hi) => ({ hi, mi: -1 }))].sort((x, y) => x.hi - y.hi);
+  for (const { hi, mi } of events) {
+    const hl = h.links[hi]!;
+    if (mi < 0) {
+      out.push({ code: 'LINK_MISSING', severity: 'error', direction: 'html_only', message: `Link "${linkText(hl)}" (${linkHref(hl, hl.rawHref)}) is in the HTML block but not in the Markdown block.`, html: side(h), markdown: side(m), before: linkHref(hl, hl.rawHref) });
       continue;
     }
-    const ml = remaining.splice(idx, 1)[0]!;
+    const ml = m.links[mi]!;
     if (sameTarget(hl, ml)) continue;
+    const text = linkText(hl, ml);
     if (hl.resolved !== null && ml.resolved !== null) {
       const diff = hrefDifference(hl.resolved, ml.resolved);
-      out.push({ code: 'LINK_TARGET_CHANGED', severity: 'error', direction: 'both', message: `Link "${redactText(hl.text)}" points to a different target (${diff} differs).`, html: side(h), markdown: side(m), before: maskHref(hl.resolved), after: maskHref(ml.resolved) });
+      out.push({ code: 'LINK_TARGET_CHANGED', severity: 'error', direction: 'both', message: `Link "${text}" points to a different target (${diff} differs).`, html: side(h), markdown: side(m), before: linkHref(hl, hl.resolved), after: linkHref(ml, ml.resolved) });
     } else if (hl.resolved === null && ml.resolved === null && relativeHrefRelation(hl.rawHref, ml.rawHref) === 'uncertain') {
       // Neither side resolved and no base could be ruled out as making them meet. A textual difference
       // alone does not establish different destinations, so this is a warning and not an error.
-      out.push({ code: 'LINK_UNVERIFIED', severity: 'warning', direction: 'both', message: `Link "${redactText(hl.text)}" differs textually and no base URL is known, so the two relative forms cannot be confirmed equal or different.`, html: side(h), markdown: side(m), before: maskHref(hl.rawHref), after: maskHref(ml.rawHref) });
+      out.push({ code: 'LINK_UNVERIFIED', severity: 'warning', direction: 'both', message: `Link "${text}" differs textually and no base URL is known, so the two relative forms cannot be confirmed equal or different.`, html: side(h), markdown: side(m), before: linkHref(hl, hl.rawHref), after: linkHref(ml, ml.rawHref) });
     } else if (hl.resolved === null && ml.resolved === null) {
       // Neither side resolved, and relativeHrefRelation found a difference no base can remove.
       const diff = hrefDifference(hl.rawHref, ml.rawHref);
-      out.push({ code: 'LINK_TARGET_CHANGED', severity: 'error', direction: 'both', message: `Link "${redactText(hl.text)}" points to a different relative target (${diff} differs).`, html: side(h), markdown: side(m), before: maskHref(hl.rawHref), after: maskHref(ml.rawHref) });
+      out.push({ code: 'LINK_TARGET_CHANGED', severity: 'error', direction: 'both', message: `Link "${text}" points to a different relative target (${diff} differs).`, html: side(h), markdown: side(m), before: linkHref(hl, hl.rawHref), after: linkHref(ml, ml.rawHref) });
     } else {
-      out.push({ code: 'LINK_UNVERIFIED', severity: 'warning', direction: 'both', message: bothBases ? `Link "${redactText(hl.text)}" could not be resolved on one side.` : `Link "${redactText(hl.text)}" differs textually and no base URL is known, so relative and absolute forms cannot be confirmed equal.`, html: side(h), markdown: side(m), before: maskHref(hl.rawHref), after: maskHref(ml.rawHref) });
+      out.push({ code: 'LINK_UNVERIFIED', severity: 'warning', direction: 'both', message: bothBases ? `Link "${text}" could not be resolved on one side.` : `Link "${text}" differs textually and no base URL is known, so relative and absolute forms cannot be confirmed equal.`, html: side(h), markdown: side(m), before: linkHref(hl, hl.rawHref), after: linkHref(ml, ml.rawHref) });
     }
   }
-  for (const ml of remaining) {
-    out.push({ code: 'LINK_ADDED', severity: 'error', direction: 'markdown_only', message: `Link "${redactText(ml.text)}" (${maskHref(ml.rawHref)}) is in the Markdown block but not in the HTML block.`, html: side(h), markdown: side(m), after: maskHref(ml.rawHref) });
+  for (const mi of added) {
+    const ml = m.links[mi]!;
+    out.push({ code: 'LINK_ADDED', severity: 'error', direction: 'markdown_only', message: `Link "${linkText(ml)}" (${linkHref(ml, ml.rawHref)}) is in the Markdown block but not in the HTML block.`, html: side(h), markdown: side(m), after: linkHref(ml, ml.rawHref) });
   }
 }
 

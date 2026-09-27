@@ -136,9 +136,29 @@ export function isPublicIPv6(ip: string): boolean {
   if ((g0 & 0xff00) === 0xff00) return false; // ff00::/8 multicast
   if (g0 === 0x2001 && g1 === 0x0db8) return false; // documentation
   if (g0 === 0x2001 && g1 === 0) return isPublicIPv4(v4FromGroups(g6 ^ 0xffff, g7 ^ 0xffff)); // Teredo: check the embedded client address
+  if (g0 === 0x2001 && g1 < 0x0200) return ietfProtocolAssignmentIsPublic(g); // 2001::/23 IETF protocol assignments
+  if (g0 === 0x3fff && (g1 & 0xf000) === 0) return false; // 3fff::/20 documentation
+  if (g0 === 0x5f00) return false; // 5f00::/16 SRv6 SIDs
+  if (g0 === 0x0100 && g1 === 0 && g2 === 0 && g3 === 1) return false; // 100:0:0:1::/64 dummy prefix
   if (g0 === 0x2002) return isPublicIPv4(v4FromGroups(g1, g2)); // 6to4
   if (g0 === 0x0100 && g1 === 0 && g2 === 0 && g3 === 0) return false; // 100::/64 discard
   return true;
+}
+
+/**
+ * 2001::/23 is not globally reachable except for the blocks the IANA IPv6 Special-Purpose Address Registry marks
+ * Globally Reachable True (read 2026-09-27, registry updated 2025-10-09): 2001:1::1, 2001:1::2 and 2001:1::3,
+ * 2001:3::/32, 2001:4:112::/48, 2001:20::/28 and 2001:30::/28. Teredo, 2001::/32, is checked before this. Up to
+ * 0.2.11 the whole block passed, benchmarking 2001:2::/48 among it, and so did 3fff::/20, 5f00::/16 and
+ * 100:0:0:1::/64 (found by an outside review 2026-09-26).
+ */
+function ietfProtocolAssignmentIsPublic(g: number[]): boolean {
+  const [, g1, g2, g3, g4, g5, g6, g7] = g as [number, number, number, number, number, number, number, number];
+  if (g1 === 1 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0 && g6 === 0 && g7 >= 1 && g7 <= 3) return true;
+  if (g1 === 3) return true;
+  if (g1 === 4 && g2 === 0x0112) return true;
+  if ((g1 & 0xfff0) === 0x0020 || (g1 & 0xfff0) === 0x0030) return true;
+  return false;
 }
 
 function v4FromGroups(hi: number, lo: number): string {

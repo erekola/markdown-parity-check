@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { fetchUrl, FetchError, validateUrl, type FetchOptions, type FetchResult } from './fetch.js';
 import { renderJson, renderText } from './report.js';
 import { errorReport, run, RunError, type Report, type RunOptions, type SourceInput } from './run.js';
-import { maskUrl } from './normalize.js';
+import { maskUrl, redactText } from './normalize.js';
 import { TOOL_NAME, TOOL_VERSION } from './version.js';
 
 export const HELP = `${TOOL_NAME} ${TOOL_VERSION}
@@ -156,7 +156,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
   if (args.output !== undefined) {
     const out = path.resolve(args.output);
     for (const input of [args.htmlFile, args.markdownFile]) {
-      if (input !== undefined && samePath(out, path.resolve(input))) throw new CliError(`--output must not point at an input file (${args.output}).`);
+      if (input !== undefined && (samePath(out, path.resolve(input)) || sameFile(out, path.resolve(input)))) throw new CliError(`--output must not point at an input file (${args.output}).`);
     }
   }
   return args;
@@ -173,6 +173,22 @@ function samePath(a: string, b: string): boolean {
   const x = norm(a);
   const y = norm(b);
   return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
+}
+
+/**
+ * Whether two existing paths name the same file, by device and file number. A hard link is a second name for the
+ * same file and passes samePath, so up to 0.2.11 --output through a hard link overwrote the input with the report
+ * (found by an outside review 2026-09-26). On Windows the file number is the NTFS file index; a file system that
+ * reports 0 gives no answer, and samePath and the write through a temporary file below still apply.
+ */
+function sameFile(a: string, b: string): boolean {
+  try {
+    const x = fs.statSync(a, { bigint: true });
+    const y = fs.statSync(b, { bigint: true });
+    return x.ino !== BigInt(0) && x.dev === y.dev && x.ino === y.ino;
+  } catch {
+    return false;
+  }
 }
 
 function readFileInput(file: string, base: string | null): SourceInput {
@@ -208,9 +224,19 @@ function emit(report: Report, args: CliArgs, io: CliIo): void {
     io.stdout(text);
     return;
   }
+  // The report goes to a new file next to the target, which then replaces the target by name. Writing into the
+  // target would truncate whatever file it names, also an input reached through a link (0.2.12).
+  const target = path.resolve(args.output);
+  const temp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
   try {
-    fs.writeFileSync(args.output, text, { encoding: 'utf8' });
+    fs.writeFileSync(temp, text, { encoding: 'utf8', flag: 'wx' });
+    fs.renameSync(temp, target);
   } catch (err) {
+    try {
+      fs.rmSync(temp, { force: true });
+    } catch {
+      // Nothing more to do: the error below names the target.
+    }
     throw new CliError(`Cannot write report to ${args.output}: ${(err as NodeJS.ErrnoException).message}`);
   }
   io.stderr(`Report written to ${args.output} (${report.summary.result.toUpperCase()}, exit ${report.summary.exitCode}).\n`);
@@ -224,6 +250,11 @@ export interface CliDeps {
 /** Runs the CLI and returns the exit code. Throws nothing; every failure becomes exit 2. */
 export async function main(argv: string[], io: CliIo = { stdout: (s) => process.stdout.write(s), stderr: (s) => process.stderr.write(s) }, deps: CliDeps = {}): Promise<0 | 1 | 2> {
   const fetchFn: FetchFn = deps.fetch ?? fetchUrl;
+  // Everything written to stderr goes through the same masking as the report. An error can repeat a URL the user
+  // gave or a header a server sent, and up to 0.2.11 stderr printed both as they were (found by an outside review
+  // 2026-09-26).
+  const raw = io;
+  io = { stdout: raw.stdout, stderr: (s) => raw.stderr(redactText(s)) };
   let args: CliArgs;
   try {
     args = parseCliArgs(argv);

@@ -10,7 +10,7 @@ import zlib from 'node:zlib';
 import type { Readable } from 'node:stream';
 import type { LookupFunction } from 'node:net';
 import { assertPublicHost, assertPublicResolved, BlockedAddressError } from './netguard.js';
-import { maskUrl } from './normalize.js';
+import { maskUrl, redactText } from './normalize.js';
 
 export type FetchErrorKind = 'invalid_url' | 'blocked' | 'timeout' | 'too_large' | 'redirect_loop' | 'too_many_redirects' | 'network' | 'protocol';
 
@@ -119,7 +119,8 @@ function decompressor(encoding: string | undefined): zlib.Gunzip | zlib.Inflate 
     case 'identity':
       return null;
     default:
-      throw new FetchError('protocol', '', `Unsupported Content-Encoding: ${encoding}`);
+      // The header is the server's text: masked and cut before it goes into a message (0.2.12).
+      throw new FetchError('protocol', '', `Unsupported Content-Encoding: ${redactText(String(encoding)).slice(0, 100)}`);
   }
 }
 
@@ -219,7 +220,11 @@ function requestOnce(url: URL, address: { address: string; family: 4 | 6 }, opti
         try {
           dec = decompressor(res.headers['content-encoding']);
         } catch (err) {
-          res.resume();
+          // Close the connection at once. Up to 0.2.11 this path drained the body with res.resume(), and since neither
+          // the byte count nor the deadline is attached here, a server that kept sending held the socket open and
+          // reading after the fetch had already failed (found by an outside review 2026-09-26).
+          res.destroy();
+          req.destroy();
           reject(new FetchError('protocol', url.href, (err as Error).message));
           return;
         }

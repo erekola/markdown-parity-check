@@ -149,25 +149,144 @@ function urlStart(t: string, s: number, e: number): number {
     }
     if (k > p + 2) p = k - 1;
   }
+  // (?:https?|ftp|wss?|file):[\/\\]*[^\s<>"'()\/\\?#@]*@  A special scheme whose authority carries user information,
+  // behind any number of slashes or backslashes, none included (0.2.12). The URL parser reads an authority after a
+  // special scheme whatever the separators, so https:user:secret@host and https:\user:secret@host carry user
+  // information just as https://user:secret@host does, and both passed a report unmasked, the first also as a GFM
+  // email link (found by an independent review before 0.2.12 was released). A failed candidate found no '@' before
+  // its delimiter, so a later candidate can succeed only when its colon sits right before that delimiter and the
+  // delimiter is its separator: the search goes on from at most the length of "https:" before the delimiter, and
+  // each position is scanned a bounded number of times.
+  for (let p = s; p < e && (best < 0 || p < best); p++) {
+    const n = specialSchemeLength(t, p, e);
+    if (n < 0) continue;
+    let k = p + n + 1;
+    while (k < e && isSep(t.charCodeAt(k))) k++;
+    while (k < e) {
+      const c = t.charCodeAt(k);
+      if (c === 0x2f || c === 0x5c || c === 0x3f || c === 0x23 || c === 0x40) break;
+      k++;
+    }
+    if (k < e && t.charCodeAt(k) === 0x40) {
+      best = p;
+      break;
+    }
+    p = Math.max(p, k - 7);
+  }
   return best;
+}
+
+const SPECIAL_SCHEME_NAMES = ['https', 'http', 'ftp', 'wss', 'ws', 'file'];
+
+/** Length of the special scheme name at t[p] when a colon follows it, else -1. Letters compare with the old
+ * expression's i and u flags, under which U+017F matches s. */
+function specialSchemeLength(t: string, p: number, e: number): number {
+  const fold = (c: number) => (c === 0x17f ? 0x73 : c >= 0x41 && c <= 0x5a ? c + 0x20 : c);
+  for (const name of SPECIAL_SCHEME_NAMES) {
+    if (p + name.length >= e || t.charCodeAt(p + name.length) !== 0x3a) continue;
+    let ok = true;
+    for (let i = 0; i < name.length && ok; i++) ok = fold(t.charCodeAt(p + i)) === name.charCodeAt(i);
+    if (ok) return name.length;
+  }
+  return -1;
+}
+
+// The rest of the token after a URL-like run. A run ends at ( ) " and ', but a URL can carry all four, so once a
+// URL has started it goes on to the next whitespace, < or >. Up to 0.2.11 the URL ended at the run, and a query
+// value such as ?token=(4711) left the parenthesis and the digits outside the mask, where the report showed them
+// as text and as a changed number (found by an outside review 2026-09-26). Text glued to a query value without a
+// space, such as the 's of ?x=1's, is part of the value to the URL parser too, and is masked with it.
+const TOKEN_TAIL = /[^\s<>]*/uy;
+
+/** End of the URL that starts at p inside the token t[p, t): trailing sentence punctuation, quotes and closing
+ * parentheses that have no opening one inside the URL are left outside it. One pass, so the scan stays linear. */
+function urlEnd(text: string, p: number, t: number): number {
+  let open = 0;
+  let close = 0;
+  for (let k = p; k < t; k++) {
+    const c = text.charCodeAt(k);
+    if (c === 0x28) open++;
+    else if (c === 0x29) close++;
+  }
+  let end = t;
+  while (end > p) {
+    const c = text[end - 1]!;
+    if (TRAIL.includes(c) || c === '"' || c === "'") end--;
+    else if (c === ')' && close > open) {
+      close--;
+      end--;
+    } else break;
+  }
+  return end;
+}
+
+/** End of the token whose run ends at e: the run end moved forward over TOKEN_TAIL. */
+function tokenEnd(text: string, e: number): number {
+  TOKEN_TAIL.lastIndex = e;
+  const m = TOKEN_TAIL.exec(text);
+  return e + (m ? m[0].length : 0);
 }
 
 /** Rewrites the URL-like part of every run in a piece of text and leaves the rest untouched. */
 function rewriteUrlRuns(text: string, rewrite: (url: string) => string): string {
   let out = '';
   let done = 0;
-  for (const run of text.matchAll(RUN)) {
-    const s = run.index!;
+  const runs = new RegExp(RUN.source, RUN.flags);
+  for (let run = runs.exec(text); run !== null; run = runs.exec(text)) {
+    const s = run.index;
     const e = s + run[0].length;
     const p = urlStart(text, s, e);
     if (p < 0) continue;
-    // Keep trailing sentence punctuation outside the URL.
-    let end = e;
-    while (end > p && TRAIL.includes(text[end - 1]!)) end--;
-    out += text.slice(done, p) + rewrite(text.slice(p, end)) + text.slice(end, e);
-    done = e;
+    const t = tokenEnd(text, e);
+    const end = urlEnd(text, p, t);
+    out += text.slice(done, p) + rewrite(text.slice(p, end)) + text.slice(end, t);
+    done = t;
+    runs.lastIndex = t;
   }
   return out + text.slice(done);
+}
+
+// How far insideHiddenUrlPart reads the token around a position. A longer token counts as hidden.
+const HIDDEN_SCAN = 4096;
+
+/**
+ * Whether position at of a source text lies in a part of a URL that maskHref hides: user information, a query
+ * value or the fragment. GFM links a bare address it finds inside another URL on its own: the part after the
+ * colon of https://user_name:secret@host, which it reads as an email address, or a URL given as a query value.
+ * That link's text and target then reached the report unmasked, because on their own they no longer look like
+ * part of a URL (found by an outside review 2026-09-26). The URL is found the way rewriteUrlRuns finds it, in the
+ * token around the position; a token longer than HIDDEN_SCAN on either side counts as hidden, so the answer errs
+ * on the side of masking.
+ */
+export function insideHiddenUrlPart(text: string, at: number): boolean {
+  const isEdge = (i: number) => {
+    const ch = text[i]!;
+    return ch === '<' || ch === '>' || /\s/u.test(ch);
+  };
+  let start = at;
+  while (start > 0 && !isEdge(start - 1)) {
+    if (at - start >= HIDDEN_SCAN) return true;
+    start--;
+  }
+  let stop = at;
+  while (stop < text.length && !isEdge(stop)) {
+    if (stop - at >= HIDDEN_SCAN) return true;
+    stop++;
+  }
+  const token = text.slice(start, stop);
+  const offset = at - start;
+  const runs = new RegExp(RUN.source, RUN.flags);
+  for (let run = runs.exec(token); run !== null && run.index < offset; run = runs.exec(token)) {
+    const p = urlStart(token, run.index, run.index + run[0].length);
+    if (p < 0) continue;
+    if (p >= offset) return false;
+    const before = token.slice(p, offset);
+    if (/[?#]/.test(before)) return true;
+    // Still inside the authority: what came before the position is user information. A special scheme has an
+    // authority behind any number of separators, none included.
+    return /^(?:(?:https?|ftp|wss?|file):[\/\\]*|(?:[a-z][a-z0-9+.-]*:)?[\/\\]{2})[^\/\\?#]*$/i.test(before);
+  }
+  return false;
 }
 
 /** Masks user information, query values and fragments of every URL-like run in a piece of report text. */
