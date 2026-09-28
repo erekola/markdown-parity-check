@@ -59,6 +59,9 @@ interface Ctx {
   ordinals: Map<Element, Map<Element, number>>;
   /** The path segment of each element, computed once per parent and tag name. */
   segments: Map<Element, string>;
+  /** Coverage issues found deep in the walk (a spanned table, a reversed list); shares the array extractHtml
+   * returns, the way pickRoot already pushes EXTRACTION_MULTIPLE_ROOTS into it (0.2.16). */
+  issues: ExtractionIssue[];
 }
 
 function lineOf(ctx: Ctx, node: AnyNode): number | undefined {
@@ -313,8 +316,11 @@ function listInfo(ctx: Ctx, li: Element): ListInfo {
   }
   const info: ListInfo = { ordered, depth: ctx.listBase + Math.max(0, lists - 1), checked: taskState(li) };
   if (ordered && parent) {
+    const reversed = parent.attribs['reversed'] !== undefined;
     const ordinal = listOrdinals(ctx, parent).get(li);
-    if (ordinal !== undefined) info.ordinal = ordinal;
+    // A reversed list's numbering is not compared (see listOrdinals); every item is left consistent instead of
+    // comparing only the first one.
+    if (ordinal !== undefined && !reversed) info.ordinal = ordinal;
   }
   return info;
 }
@@ -341,16 +347,26 @@ function listOrdinals(ctx: Ctx, ol: Element): Map<Element, number> {
     if (!reversed || i === 0) out.set(item, n);
     n += reversed ? -1 : 1;
   });
+  // A reversed list only gives its first item a browser-shown number (see above); Markdown has no reversed list,
+  // so the later numbers are never compared. Up to 0.2.15 that was silent; listInfo below now also leaves every
+  // item's ordinal out, not only the ones already undefined (0.2.16, found by an outside review 2026-09-28).
+  if (reversed && items.length > 0) {
+    ctx.issues.push({ code: 'EXTRACTION_LIST_REVERSED_NOT_COMPARED', severity: 'info', message: 'This list is reversed; its numbering is not compared, because Markdown has no reversed list to compare it against.', line: lineOf(ctx, ol) });
+  }
   ctx.ordinals.set(ol, out);
   return out;
 }
 
-/** The state of the item's own checkbox, not one inside a nested list: true, false, or null without one. */
+/** The state of the item's own checkbox, not one inside a nested list: true, false, or null without one. A
+ * checkbox hidden by the hidden or aria-hidden attribute, or wrapped in a hidden ancestor, is skipped like any
+ * other hidden content: its subtree is never pushed onto the stack, so an earlier hidden checkbox cannot answer
+ * for a later visible one (0.2.16, found by an outside review 2026-09-28). */
 function taskState(li: Element): boolean | null {
   const stack: ChildNode[] = [...li.children].reverse();
   while (stack.length > 0) {
     const node = stack.pop()!;
     if (!(node instanceof Element) || node.name === 'ul' || node.name === 'ol') continue;
+    if (hiddenAttr(node)) continue;
     if (node.name === 'input' && (node.attribs['type'] ?? '').toLowerCase() === 'checkbox') return node.attribs['checked'] !== undefined;
     for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]!);
   }
@@ -402,7 +418,10 @@ function starlightCode(pre: Element): string {
   const language = pre.attribs['data-language'];
   const diffMarkers = Boolean(language) && language !== 'diff'
     && lines.some((line) => line instanceof Element && (hasClass(line, 'ins') || hasClass(line, 'del')));
-  return lines.map((line) => starlightLineText((line as Element).children.filter((node) => !gutter(node)), line as Element, diffMarkers)).join('\n');
+  // A line hidden with the hidden attribute is not exported either: up to 0.2.15 every .ec-line reached the text
+  // regardless of visibility (0.2.16, found by an outside review 2026-09-28).
+  const visibleLines = lines.filter((line) => !(line instanceof Element && hiddenAttr(line)));
+  return visibleLines.map((line) => starlightLineText((line as Element).children.filter((node) => !gutter(node)), line as Element, diffMarkers)).join('\n');
 }
 
 /** One Expressive Code line as starlight-llms-txt exports it. The marker goes before the first text of the first
@@ -491,6 +510,19 @@ function handleStarlightTabs(ctx: Ctx, component: Element): void {
   }
 }
 
+/** Whether a table cell carries a rowspan or colspan that actually spans more than one row or column; an
+ * absent, empty or "1" value is the default and is not a span. An unparseable value is treated as a span too,
+ * because a plain grid reading cannot tell what it means either. */
+function hasSpan(el: Element): boolean {
+  const spans = (attr: string): boolean => {
+    const v = el.attribs[attr];
+    if (v === undefined) return false;
+    const n = Number.parseInt(v, 10);
+    return !Number.isFinite(n) || n > 1;
+  };
+  return spans('rowspan') || spans('colspan');
+}
+
 function handleTable(ctx: Ctx, table: Element): void {
   // The caption is content: a paragraph before the table, the way a Markdown table's title has to be written. Up to
   // 0.2.12 it was dropped with its text, numbers and links (found by an outside review 2026-09-26).
@@ -509,6 +541,15 @@ function handleTable(ctx: Ctx, table: Element): void {
     return true;
   };
   const rows = selectAll('tr', table).filter((tr) => closestTable(tr) === table && shown(tr));
+  // A rowspan or colspan moves a cell's value into a column a plain row/column reading does not predict, so the
+  // table body is not compared, the way a footnote's content is not: the block is still pushed, so it keeps
+  // aligning with its Markdown counterpart instead of showing up as a missing and an added block, but compare.ts
+  // skips the cell-by-cell check for it once it sees the flag (0.2.16, found by an outside review 2026-09-28); the
+  // caption above is unaffected and stays compared either way.
+  const spanned = rows.some((tr) => tr.children.some((c) => c instanceof Element && (c.name === 'td' || c.name === 'th') && !isSkipped(c, ctx.root, ctx.profile) && hasSpan(c)));
+  if (spanned) {
+    ctx.issues.push({ code: 'EXTRACTION_TABLE_SPAN_NOT_COMPARED', severity: 'info', message: 'A table cell carries a rowspan or colspan attribute; a plain row/column reading cannot place its value reliably, so the table body was not compared.', line: lineOf(ctx, table) });
+  }
   const cells: string[][] = [];
   const links: Link[] = [];
   for (const tr of rows) {
@@ -525,7 +566,7 @@ function handleTable(ctx: Ctx, table: Element): void {
   }
   if (cells.length === 0) return;
   const text = cells.map((r) => r.join(' | ')).join(' \n ');
-  pushBlock(ctx, { type: 'table', text: strictNormalize(text), cells, links }, table, table);
+  pushBlock(ctx, { type: 'table', text: strictNormalize(text), cells, links, ...(spanned ? { spanned: true } : {}) }, table, table);
 }
 
 function closestTable(el: Element): Element | null {
@@ -607,7 +648,7 @@ export function extractHtml(source: string, options: HtmlExtractOptions = {}): E
   const lineStarts = [0];
   for (let i = 0; i < source.length; i++) if (source.charCodeAt(i) === 10) lineStarts.push(i + 1);
   if (profile === 'starlight') notes.push('Starlight profile: all associated tab panels are compared, including inactive panels; Expressive Code line boundaries and aside titles are retained.');
-  const ctx: Ctx = { profile, base, source, lineStarts, blocks: [], notes, root, listBase: 0, ordinals: new Map(), segments: new Map() };
+  const ctx: Ctx = { profile, base, source, lineStarts, blocks: [], notes, root, listBase: 0, ordinals: new Map(), segments: new Map(), issues };
   // A selector that picks a heading, list item, table or pre keeps that block type, so the root goes
   // through handleBlock. Every other root is read as a container, a list included: handleBlock's list
   // branch reads only <li> children, and a root list would lose any other content it holds.

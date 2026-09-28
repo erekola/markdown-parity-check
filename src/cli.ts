@@ -164,7 +164,11 @@ export function parseCliArgs(argv: string[]): CliArgs {
         const u = new URL(args.baseUrl);
         if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('not http(s)');
       } catch {
-        throw new CliError(`--base-url must be an absolute http(s) URL (got "${args.baseUrl}").`);
+        // args.baseUrl is embedded directly, so it must be masked here rather than left to the generic
+        // redactText pass over stderr/JSON: a raw space breaks that pass's run-based URL detection into
+        // fragments too small to recognize as one URL, leaving user information such as a password visible
+        // (0.2.16, found by an outside review 2026-09-28). maskUrl handles the whole value correctly regardless.
+        throw new CliError(`--base-url must be an absolute http(s) URL (got "${maskUrl(args.baseUrl)}").`);
       }
     }
   }

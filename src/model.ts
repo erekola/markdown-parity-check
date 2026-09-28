@@ -33,6 +33,10 @@ export interface Block {
   depth?: number;
   /** Table cells row by row, strictly normalized. Only for type 'table'. */
   cells?: string[][];
+  /** Only for type 'table', HTML side: a cell carries a rowspan or colspan, so a plain row/column reading cannot
+   * place its value reliably. compare.ts skips the cell-by-cell check for this block and relies on the
+   * EXTRACTION_TABLE_SPAN_NOT_COMPARED issue extraction already raised (0.2.16). */
+  spanned?: boolean;
   /** Code content after normalizeCode: line endings normalized to LF and trailing newlines removed. Only for type 'code'. */
   code?: string;
   /** Where a list item sits in its list. Only for type 'listItem' (0.2.13). */

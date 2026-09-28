@@ -39,6 +39,19 @@ export function normalizeCode(code: string): string {
   return code.replace(/\r\n?/g, '\n').replace(/\n+$/, '');
 }
 
+// Terminal control characters (ANSI escape sequences and other C0 controls) reach a text report unescaped if a
+// compared page or an argument carries one, while --format json is already safe because JSON.stringify escapes
+// every control character. Tab, newline and carriage return are kept: they are ordinary formatting, and by the
+// time most report text reaches this point strictNormalize has already collapsed them to a single space anyway.
+const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+
+/** Removes ANSI escape sequences and other C0 controls from a value that may come from a compared page or a raw
+ * argument, so a plain --format text report cannot replay them at the terminal (0.2.16, found by an outside
+ * review 2026-09-28). */
+export function stripControlChars(text: string): string {
+  return text.replace(CONTROL_CHARS, '');
+}
+
 // A numeric token: optional sign (ASCII hyphen, Unicode minus or plus) that is not preceded by a letter
 // or digit (so the "-09" in 2026-09-10 is a separator, not a sign), digits with inner separators
 // (decimal, thousands, date, time, version), optional percent or currency sign on either side.
@@ -255,6 +268,35 @@ function rewriteUrlRuns(text: string, rewrite: (url: string) => string): string 
 // How far insideHiddenUrlPart reads the token around a position. A longer token counts as hidden.
 const HIDDEN_SCAN = 4096;
 
+// A userinfo wrapped in parentheses right after "scheme://", such as scheme://(name):secret@host, is not a
+// URL-like run under RUN above, because "(" and ")" split runs there: "scheme://", the parenthesized name and
+// the rest starting at the colon become three separate runs, and none of them alone looks like a URL with user
+// information (found by an outside review 2026-09-28). This pattern is narrow and every quantifier is bounded on
+// purpose, so it stays linear by itself and is checked before the general run-splitting scan, not folded into it.
+const PAREN_USERINFO = /\b([a-z][a-z0-9+.-]{0,15}):\/\/\(([^()\s]{0,256})\):([^@\s<>"'()]{0,1024})@/giu;
+
+/** Masks a "scheme://(name):secret@" userinfo, leaving the scheme and an unmasked "***@" behind so the rest of
+ * the URL (host, path, query, fragment) reaches the ordinary run-based masking below as one unbroken run. */
+export function maskParenUserinfo(text: string): string {
+  return text.replace(PAREN_USERINFO, (_m, scheme: string) => `${scheme}://***@`);
+}
+
+/** Whether position `at` falls inside the parenthesized name or the secret of a PAREN_USERINFO match, the same
+ * shape maskParenUserinfo hides. The search window is the same HIDDEN_SCAN bound insideHiddenUrlPart itself uses,
+ * so a link deep inside a large document does not rescan the whole source. */
+function insideParenUserinfo(text: string, at: number): boolean {
+  const from = Math.max(0, at - HIDDEN_SCAN);
+  const to = Math.min(text.length, at + HIDDEN_SCAN);
+  const window = text.slice(from, to);
+  const re = new RegExp(PAREN_USERINFO.source, PAREN_USERINFO.flags);
+  for (let m = re.exec(window); m !== null; m = re.exec(window)) {
+    const hiddenStart = from + m.index + m[1]!.length + 3; // scheme + "://", at the "("
+    const hiddenEnd = from + m.index + m[0].length - 1; // at the "@"
+    if (at >= hiddenStart && at < hiddenEnd) return true;
+  }
+  return false;
+}
+
 /**
  * Whether position at of a source text lies in a part of a URL that maskHref hides: user information, a query
  * value or the fragment. GFM links a bare address it finds inside another URL on its own: the part after the
@@ -265,6 +307,7 @@ const HIDDEN_SCAN = 4096;
  * on the side of masking.
  */
 export function insideHiddenUrlPart(text: string, at: number): boolean {
+  if (insideParenUserinfo(text, at)) return true;
   const isEdge = (i: number) => {
     const ch = text[i]!;
     return ch === '<' || ch === '>' || /\s/u.test(ch);
@@ -295,9 +338,12 @@ export function insideHiddenUrlPart(text: string, at: number): boolean {
   return false;
 }
 
-/** Masks user information, query values and fragments of every URL-like run in a piece of report text. */
+/** Masks user information, query values and fragments of every URL-like run in a piece of report text.
+ * maskParenUserinfo runs first for the parenthesized-userinfo shape RUN cannot see as one run, and
+ * stripControlChars runs last so a raw ANSI escape from a compared page or an argument cannot reach a plain
+ * --format text report (0.2.16, found by an outside review 2026-09-28). */
 export function redactText(text: string): string {
-  return rewriteUrlRuns(text, maskHref);
+  return stripControlChars(rewriteUrlRuns(maskParenUserinfo(text), maskHref));
 }
 
 /**

@@ -95,7 +95,11 @@ function inlineChildren(ctx: Ctx, children: PhrasingContent[], run: InlineRun, l
     // HTML side. Up to 0.2.12 only the tags were dropped and the text between them stayed (found by an outside review
     // 2026-09-26). Its content up to the matching closing tag is left out; without one the tag is reported.
     if (!tag.closing && (tag.attribs['hidden'] !== undefined || tag.attribs['aria-hidden'] === 'true')) {
-      if (VOID_TAGS.has(tag.name) || /\/>\s*$/.test(node.value)) continue;
+      // A trailing "/>" on a non-void element is not a self-close in HTML: <span hidden/>text</span> does not
+      // show "text" in a browser either, only a void element's own tag ends there. Up to 0.2.15 the slash alone
+      // was read as a close, so a malformed but common self-closing spelling left hidden text visible (0.2.16,
+      // found by an outside review 2026-09-28).
+      if (VOID_TAGS.has(tag.name)) continue;
       closes ??= closingTags(children);
       const end = closes.get(i) ?? -1;
       if (end < 0) {

@@ -69,7 +69,10 @@ export const DEFAULT_LIMITS: Readonly<AlignmentLimits> = Object.freeze({
   maxSimilarityWork: Number.POSITIVE_INFINITY,
 });
 
-function resolveLimits(limits: Partial<AlignmentLimits> | undefined): AlignmentLimits {
+/** Fills in the defaults for any limit the caller did not set, and validates every one. Exported so
+ * compare.ts can resolve the same limits once and thread maxSimilarityWork into its own link-pairing budget
+ * (0.2.16). */
+export function resolveLimits(limits: Partial<AlignmentLimits> | undefined): AlignmentLimits {
   const out = { ...DEFAULT_LIMITS, ...(limits ?? {}) };
   for (const [k, v] of Object.entries(out)) {
     if (typeof v !== 'number' || Number.isNaN(v) || v <= 0) throw new TypeError(`Alignment limit ${k} must be a positive number (got ${String(v)}).`);

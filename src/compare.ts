@@ -1,6 +1,6 @@
 // The comparison core: aligns blocks and turns the alignment into findings. Pure and network-free.
 
-import { align, UNCERTAIN_THRESHOLD, type AlignmentLimits, type Pair } from './align.js';
+import { align, resolveLimits, AlignmentLimitError, UNCERTAIN_THRESHOLD, type AlignmentLimits, type Pair } from './align.js';
 import type { Block, Extraction, Finding, FindingSide, Link } from './model.js';
 import { excerpt, hrefDifference, looseNormalize, maskHref, redactText, relativeHrefRelation, visibleNumbers } from './normalize.js';
 
@@ -92,7 +92,7 @@ const linkHref = (l: Link, href: string) => (l.masked ? '***' : maskHref(href));
  * whose text differs only in case or punctuation is one changed text and not a missing and an added link (0.2.13).
  * @internal Exported for test/compare-links.test.ts.
  */
-export function pairLinks(hLinks: Link[], mLinks: Link[]): { pairs: Array<[number, number]>; missing: number[]; added: number[] } {
+export function pairLinks(hLinks: Link[], mLinks: Link[], maxWork = Number.POSITIVE_INFINITY): { pairs: Array<[number, number]>; missing: number[]; added: number[] } {
   const used = new Array<boolean>(mLinks.length).fill(false);
   const lists = new Map<string, number[]>();
   const heads = new Map<string, number>();
@@ -125,6 +125,10 @@ export function pairLinks(hLinks: Link[], mLinks: Link[]): { pairs: Array<[numbe
   const seenInH = new Map<string, number>();
   const pairs: Array<[number, number]> = [];
   let missing: number[] = [];
+  // Unresolved links with the same text and unequal counts scan the shared list below once per HTML link (step
+  // 2); work counts those scans so maxWork bounds the total the way maxSimilarityWork bounds align's own
+  // similarity search (0.2.16, found by an outside review 2026-09-28).
+  let work = 0;
   hLinks.forEach((hl, hi) => {
     let idx = -1;
     const k = seenInH.get(hl.text) ?? 0;
@@ -139,6 +143,10 @@ export function pairLinks(hLinks: Link[], mLinks: Link[]): { pairs: Array<[numbe
     } else {
       const list = lists.get(key('text', hl.text)) ?? [];
       for (const i of list) {
+        work++;
+        if (work > maxWork) {
+          throw new AlignmentLimitError(`Comparison limit exceeded: pairing unresolved links by shared text needs more than ${maxWork} comparisons among ${hLinks.length} HTML and ${mLinks.length} Markdown links. Narrow the HTML content with --selector or compare a smaller page.`);
+        }
         if (!used[i] && sameTarget(hl, mLinks[i]!)) {
           idx = i;
           break;
@@ -191,9 +199,9 @@ export function pairLinks(hLinks: Link[], mLinks: Link[]): { pairs: Array<[numbe
   return { pairs, missing, added };
 }
 
-function compareLinks(out: Finding[], h: Block, m: Block, bothBases: boolean): void {
+function compareLinks(out: Finding[], h: Block, m: Block, bothBases: boolean, maxSimilarityWork: number): void {
   // Link targets are compared unmasked; every value that reaches a finding goes through maskHref.
-  const { pairs, missing, added } = pairLinks(h.links, m.links);
+  const { pairs, missing, added } = pairLinks(h.links, m.links, maxSimilarityWork);
   const events: Array<{ hi: number; mi: number }> = [...pairs.map(([hi, mi]) => ({ hi, mi })), ...missing.map((hi) => ({ hi, mi: -1 }))].sort((x, y) => x.hi - y.hi);
   for (const { hi, mi } of events) {
     const hl = h.links[hi]!;
@@ -256,6 +264,9 @@ function compareListItems(out: Finding[], h: Block, m: Block): void {
 }
 
 function compareTables(out: Finding[], h: Block, m: Block): void {
+  // A spanned table already carries its one EXTRACTION_TABLE_SPAN_NOT_COMPARED issue from extraction; the cell
+  // positions html.ts still filled in are not reliable, so no cell-by-cell finding is added here (0.2.16).
+  if (h.spanned) return;
   const hc = h.cells ?? [];
   const mc = m.cells ?? [];
   const hCols = Math.max(0, ...hc.map((r) => r.length));
@@ -275,7 +286,7 @@ function compareTables(out: Finding[], h: Block, m: Block): void {
   }
 }
 
-function comparePair(out: Finding[], p: Pair, h: Block, m: Block, bothBases: boolean): void {
+function comparePair(out: Finding[], p: Pair, h: Block, m: Block, bothBases: boolean, maxSimilarityWork: number): void {
   if (p.kind === 'moved') {
     out.push({ code: 'ORDER_CHANGED', severity: 'warning', direction: 'both', message: `The ${label(h)} appears in a different position in the Markdown.`, html: side(h), markdown: side(m) });
   }
@@ -318,7 +329,7 @@ function comparePair(out: Finding[], p: Pair, h: Block, m: Block, bothBases: boo
     }
   }
   if (h.type === 'listItem' && m.type === 'listItem') compareListItems(out, h, m);
-  compareLinks(out, h, m, bothBases);
+  compareLinks(out, h, m, bothBases, maxSimilarityWork);
 }
 
 const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 };
@@ -326,6 +337,7 @@ const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 };
 export function compare(html: Extraction, markdown: Extraction, options: { bothBases?: boolean; limits?: Partial<AlignmentLimits> } = {}): CompareResult {
   const a = html.blocks;
   const b = markdown.blocks;
+  const lim = resolveLimits(options.limits);
   const al = align(a, b, options.limits);
   const findings: Finding[] = [];
   const bothBases = options.bothBases ?? false;
@@ -335,7 +347,7 @@ export function compare(html: Extraction, markdown: Extraction, options: { bothB
   }
   for (const i of html.issues) findings.push({ code: i.code, severity: i.severity, direction: 'html_only', message: i.message, html: { line: i.line, excerpt: i.excerpt } });
   for (const i of markdown.issues) findings.push({ code: i.code, severity: i.severity, direction: 'markdown_only', message: i.message, markdown: { line: i.line, excerpt: i.excerpt } });
-  for (const p of al.pairs) comparePair(findings, p, a[p.a]!, b[p.b]!, bothBases);
+  for (const p of al.pairs) comparePair(findings, p, a[p.a]!, b[p.b]!, bothBases, lim.maxSimilarityWork);
   for (const i of al.unmatchedA) {
     const h = a[i]!;
     findings.push({ code: 'BLOCK_MISSING', severity: 'error', direction: 'html_only', message: `The ${label(h)} is in the HTML but not in the Markdown.`, html: side(h), before: excerpt(h.type === 'code' ? (h.code ?? h.text) : h.text) });

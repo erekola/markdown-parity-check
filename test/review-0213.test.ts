@@ -179,11 +179,12 @@ describe('F13: list numbering, nesting and task state', () => {
     const html = page('<ol start="7"><li>Seven</li><li>Eight<ul><li>Nested</li></ul></li></ol><ul><li><input type="checkbox" disabled checked> Done</li><li><input type="checkbox" disabled> Open</li></ul>');
     assert.deepEqual(check(html, md).codes, []);
     assert.deepEqual(check(page('<ol><li value="3">Three</li><li>Four</li></ol>'), '3. Three\n4. Four\n').codes, []);
-    // A reversed list counts down; Markdown has no reversed list and numbers on from its first item, so only the
-    // first number is compared, and a faithful copy written with the visible numbers passes.
-    assert.deepEqual(check(page('<ol reversed><li>Two</li><li>One</li></ol>'), '2. Two\n1. One\n').codes, []);
-    assert.deepEqual(check(page('<ol reversed><li value="10">Ten</li><li>Nine</li><li>Eight</li></ol>'), '10. Ten\n9. Nine\n8. Eight\n').codes, []);
-    assert.deepEqual(check(page('<ol reversed start="3"><li>Three</li><li>Two</li></ol>'), '5. Three\n4. Two\n').codes, ['LIST_NUMBER_CHANGED:error']);
+    // A reversed list counts down; Markdown has no reversed list and numbers on from its first item, so the
+    // numbering is not compared at all (0.2.16): every case below reports only the info finding, never
+    // LIST_NUMBER_CHANGED, whether the visible numbers were copied faithfully or not.
+    assert.deepEqual(check(page('<ol reversed><li>Two</li><li>One</li></ol>'), '2. Two\n1. One\n').codes, ['EXTRACTION_LIST_REVERSED_NOT_COMPARED:info']);
+    assert.deepEqual(check(page('<ol reversed><li value="10">Ten</li><li>Nine</li><li>Eight</li></ol>'), '10. Ten\n9. Nine\n8. Eight\n').codes, ['EXTRACTION_LIST_REVERSED_NOT_COMPARED:info']);
+    assert.deepEqual(check(page('<ol reversed start="3"><li>Three</li><li>Two</li></ol>'), '5. Three\n4. Two\n').codes, ['EXTRACTION_LIST_REVERSED_NOT_COMPARED:info']);
     assert.deepEqual(check(page('<ol><li>One</li><li hidden>Hidden</li><li>Two</li></ol>'), '1. One\n2. Two\n').codes, []);
   });
 });

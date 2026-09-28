@@ -11,14 +11,15 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { expandIPv6, isPublicIPv6 } from '../src/netguard.js';
-import { excerpt, maskHref, redactText } from '../src/normalize.js';
+import { excerpt, maskHref, maskParenUserinfo, redactText, stripControlChars } from '../src/normalize.js';
 
 const OLD_URL_IN_TEXT = /(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"'()]+|www\.[^\s<>"'()]+|(?<![\w/])\/[^\s<>"'()]*[?#][^\s<>"'()]*|[^\s<>"'()]*\?[\w%.-]+=[^\s<>"'()]*|[\/\\]{2}[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*|(?:https?|ftp|wss?|file):[\/\\]*[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*)/giu;
 
 const OLD_URL_IN_TOKEN = new RegExp(`(?:${OLD_URL_IN_TEXT.source})[^\\s<>]*`, 'giu');
 
 function oldRedactText(text: string): string {
-  return text.replace(OLD_URL_IN_TOKEN, (m) => {
+  const pre = maskParenUserinfo(text);
+  const out = pre.replace(OLD_URL_IN_TOKEN, (m) => {
     const open = (m.match(/\(/g) ?? []).length;
     let close = (m.match(/\)/g) ?? []).length;
     let end = m.length;
@@ -32,6 +33,7 @@ function oldRedactText(text: string): string {
     }
     return maskHref(m.slice(0, end)) + m.slice(end);
   });
+  return stripControlChars(out);
 }
 
 function oldIpv4ToInt(ip: string): number {
@@ -106,12 +108,20 @@ describe('linear-time redaction and address parsing (0.2.2)', () => {
       'x1abc://host/?k=SECRET',
       '\u017ftp://host/?k=SECRET',
       '(https://example.com/?k=SECRET)',
+      'Open https://(name):SECRET@example.test/page for details.',
     ];
     for (const text of cases) {
       const out = redactText(text);
       assert.equal(out, oldRedactText(text), text);
       assert.doesNotMatch(out, /SECRET/, text);
     }
+  });
+
+  it('redactText strips ANSI and other C0 control characters (0.2.16)', () => {
+    const text = 'Start \x1b[2J hidden terminal control';
+    const out = redactText(text);
+    assert.doesNotMatch(out, /\x1b/);
+    assert.equal(out, 'Start [2J hidden terminal control');
   });
 
   it('expandIPv6 gives the same result as the old expression on random input', () => {
