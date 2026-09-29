@@ -537,8 +537,9 @@ function handleStarlightTabs(ctx: Ctx, component: Element): void {
 }
 
 /** Whether a table cell carries a rowspan or colspan that actually spans more than one row or column; an
- * absent, empty or "1" value is the default and is not a span. An unparseable value is treated as a span too,
- * because a plain grid reading cannot tell what it means either. */
+ * absent or "1" value is the default and is not a span. An empty or unparseable value is treated as a span,
+ * because a plain grid reading cannot tell what it means either (Number.parseInt gives NaN for both). A
+ * rowspan of 0 is a span, a colspan of 0 is not (see the comment inside). */
 function hasSpan(el: Element): boolean {
   // rowspan="0" is a distinct HTML value: the cell extends through every remaining row of its row group, so
   // it moves a following row's cell into a different column just as rowspan="2" does, but it was read as
