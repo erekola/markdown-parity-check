@@ -56,9 +56,11 @@ Exit code 0 means the implemented checks found nothing to reject. It does not pr
 | `--format text` or `--format json` | Print a readable report, which is the default, or a structured one. |
 | `--output PATH` | Write the report to a file. An input file is never overwritten. |
 | `--strict` | Treat warnings as rejecting findings. |
-| `--timeout-ms MS` | Deadline per request. The default is 15 000 ms. |
-| `--max-bytes N` | Limit on decoded bytes per response. The default is 5 MiB. |
+| `--timeout-ms MS` | Deadline per request. The default is 15 000 ms. The value must be a positive decimal integer no greater than 2147483647. |
+| `--max-bytes N` | Limit on decoded bytes per response. The default is 5 MiB. The value must be a positive decimal integer no greater than 9007199254740991. |
 | `--help`, `--version` | Print the help or the version. |
+
+A value that is outside these ranges, or that is not a plain run of digits, stops the run with exit code 2 and an error message.
 
 ## What is compared
 
@@ -86,7 +88,7 @@ Both use the comparison core of this package. They differ in which pages they re
 
 The hosted page also answers a JSON POST, described on the page. It runs the release of this package pinned in [turva-worker](https://github.com/erekola/turva-worker), which can be older than the latest npm release. The report's `toolVersion` field shows which release produced it.
 
-Some limits are not in the table. The command-line tool follows at most 5 redirects. The extraction stops with exit code 2 when elements are nested more than 1024 levels deep, and the matching stops the same way when more than 1 000 000 similar block pairs would have to be considered; the library `limits` default to the same values.
+Some limits are not in the table. A URL that contains a user name or password is refused even when its host is public, and the same holds for a redirect target. The tool sends `Accept-Encoding: gzip, deflate, br` and decodes responses with no Content-Encoding, `identity`, `gzip`, `x-gzip`, `deflate` or `br`. A response with any other Content-Encoding, `zstd` for example, is rejected, and the run ends with exit code 2. The command-line tool follows at most 5 redirects. The extraction stops with exit code 2 when elements are nested more than 1024 levels deep, and the matching stops the same way when more than 1 000 000 similar block pairs would have to be considered; the library `limits` default to the same values.
 
 A hosted check can fail on turva.dev's own pages as well. On 2026-09-11 the check of https://turva.dev/tools returned `fail` with five errors. The Markdown carries a Related heading and four links that the HTML page does not repeat as a list, and the report listed each of them. The same four targets are links inside that page's tool cards, so the report found a missing structure and not missing content. [HTML and Markdown can disagree](https://turva.dev/blog/html-and-markdown-can-disagree) reads that result in full.
 
