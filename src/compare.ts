@@ -266,7 +266,10 @@ function compareListItems(out: Finding[], h: Block, m: Block): void {
 function compareTables(out: Finding[], h: Block, m: Block): void {
   // A spanned table already carries its one EXTRACTION_TABLE_SPAN_NOT_COMPARED issue from extraction; the cell
   // positions html.ts still filled in are not reliable, so no cell-by-cell finding is added here (0.2.16).
-  if (h.spanned) return;
+  // m.spanned matters just as much: a table that is spanned only inside a raw HTML block on the Markdown
+  // side (N-P-raw-html, found by an outside review 2026-09-28) carried unreliable cell positions there, and
+  // checking h.spanned alone still ran the cell-by-cell comparison below against them.
+  if (h.spanned || m.spanned) return;
   const hc = h.cells ?? [];
   const mc = m.cells ?? [];
   const hCols = Math.max(0, ...hc.map((r) => r.length));

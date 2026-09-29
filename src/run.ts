@@ -51,7 +51,8 @@ export { MAX_NESTING_DEPTH };
 
 /** Parser stack exhaustion on hostile nesting is reported as a comparison error, never as a crash. */
 function extractionError(side: 'HTML' | 'Markdown', err: unknown): RunError | null {
-  if (err instanceof HtmlExtractError || err instanceof MarkdownExtractError) return new RunError(err.message);
+  if (err instanceof HtmlExtractError) return new RunError(err.message, err.value);
+  if (err instanceof MarkdownExtractError) return new RunError(err.message);
   if (err instanceof RangeError) return new RunError(`The ${side} could not be parsed within the call stack (${err.message}); it is nested too deeply to compare.`);
   return null;
 }
@@ -80,15 +81,22 @@ export interface Report {
     exitCode: 0 | 1 | 2;
     /** Present when the comparison could not be completed reliably. */
     error?: string;
+    /** The specific input value error names, capped and reported in its own field rather than only inside
+     * the message sentence (V10-P3-01, the same split worker.js's own diagnostics already use). */
+    errorValue?: string;
   };
   findings: Finding[];
   limitations: string[];
 }
 
 export class RunError extends Error {
-  constructor(message: string) {
+  /** Carries HtmlExtractError's own capped, separately-fielded reflected value (V10-P3-01) through to the
+   * report, instead of only the sentence that already names it. */
+  value?: string;
+  constructor(message: string, value?: string) {
     super(message);
     this.name = 'RunError';
+    this.value = value;
   }
 }
 
@@ -197,10 +205,11 @@ export function run(html: SourceInput, markdown: SourceInput, options: RunOption
   return report;
 }
 
-export function errorReport(options: RunOptions, html: SourceMeta | null, markdown: SourceMeta | null, message: string): Report {
+export function errorReport(options: RunOptions, html: SourceMeta | null, markdown: SourceMeta | null, message: string, value?: string): Report {
   const empty: SourceMeta = { kind: options.mode === 'url' ? 'url' : 'file', bytes: 0 };
   const r = baseReport(options, html ?? empty, markdown ?? empty);
   r.summary.error = message;
+  if (value !== undefined) r.summary.errorValue = value;
   return r;
 }
 

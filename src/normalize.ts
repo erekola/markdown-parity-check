@@ -271,32 +271,96 @@ const HIDDEN_SCAN = 4096;
 // A userinfo wrapped in parentheses right after "scheme://", such as scheme://(name):secret@host, is not a
 // URL-like run under RUN above, because "(" and ")" split runs there: "scheme://", the parenthesized name and
 // the rest starting at the colon become three separate runs, and none of them alone looks like a URL with user
-// information (found by an outside review 2026-09-28). This pattern is narrow and every quantifier is bounded on
-// purpose, so it stays linear by itself and is checked before the general run-splitting scan, not folded into it.
-const PAREN_USERINFO = /\b([a-z][a-z0-9+.-]{0,15}):\/\/\(([^()\s]{0,256})\):([^@\s<>"'()]{0,1024})@/giu;
+// information (found by an outside review 2026-09-28).
+//
+// Fail-closed (found by an outside review 2026-09-28): up to here the whole shape (scheme, name, secret and the
+// closing "@") was one regex whose name and secret each carried a fixed quantifier cap (256 and 1024 characters).
+// A name or secret one character longer than its own cap made the regex fail to match at that position at all, so
+// the userinfo reached a report completely unmasked instead of masked, the opposite of what a redaction function
+// should do when it cannot tell how long something is. nextParenUserinfo below finds the fixed "scheme://(" start
+// with a small bounded regex (the scheme name itself is capped at 32 characters, which no real scheme name
+// approaches) and then reads the name and the secret by hand with indexOf, inside PAREN_USERINFO_SCAN characters
+// of that point: a name or secret near the old 256/1024 limits, or well past them, is found and masked all the
+// same, as long as its closing ")" or its "@" sits within that window. When the secret's end cannot be found that
+// way either (no "@" and no other stopping character before the window runs out), the match is still made and
+// masked through the end of the window, because not knowing where a credential ends is a reason to mask more of
+// it, not less. This keeps the scan linear in the length of the text: each "(" is looked at once, and the work
+// done for it is bounded by PAREN_USERINFO_SCAN regardless of how long the rest of the text is, the same trade-off
+// HIDDEN_SCAN below already makes for the same class of problem.
+const PAREN_USERINFO_START = /\b([a-z][a-z0-9+.-]{0,31}):\/\/\(/giu;
+const PAREN_USERINFO_SCAN = HIDDEN_SCAN;
 
-/** Masks a "scheme://(name):secret@" userinfo, leaving the scheme and an unmasked "***@" behind so the rest of
- * the URL (host, path, query, fragment) reaches the ordinary run-based masking below as one unbroken run. */
-export function maskParenUserinfo(text: string): string {
-  return text.replace(PAREN_USERINFO, (_m, scheme: string) => `${scheme}://***@`);
+interface ParenUserinfoMatch {
+  /** Start of the whole match, at the first character of the scheme name. */
+  start: number;
+  scheme: string;
+  /** Start of the parenthesized name, right after "(". */
+  nameStart: number;
+  /** Start of the secret, right after "):". */
+  secretStart: number;
+  /** End of the secret: the "@" when one was found, otherwise the bound where the search gave up. */
+  secretEnd: number;
+  /** One past the match: an "@" that ends it, or secretEnd itself when there was no "@" to include. */
+  end: number;
 }
 
-/** Whether position `at` falls inside the parenthesized name or the secret of a PAREN_USERINFO match, the same
- * shape maskParenUserinfo hides. The search window is the same HIDDEN_SCAN bound insideHiddenUrlPart itself uses,
- * so a link deep inside a large document does not rescan the whole source. */
+/** Finds the next "scheme://(name):secret@" match at or after `from`. See the fail-closed rationale above. */
+function nextParenUserinfo(text: string, from: number): ParenUserinfoMatch | null {
+  const re = new RegExp(PAREN_USERINFO_START.source, PAREN_USERINFO_START.flags);
+  re.lastIndex = from;
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    const nameStart = m.index + m[0].length;
+    const nameWindowEnd = Math.min(text.length, nameStart + PAREN_USERINFO_SCAN);
+    const nameWindow = text.slice(nameStart, nameWindowEnd);
+    const close = nameWindow.indexOf(')');
+    const stop = nameWindow.search(/[\s(]/);
+    if (close < 0 || (stop >= 0 && stop < close) || nameWindow[close + 1] !== ':') {
+      // No well-formed "):" landmark within the window: this "(" is not the shape we mask, so it is left as it is
+      // and the search resumes right after it, not from the start again.
+      re.lastIndex = nameStart;
+      continue;
+    }
+    const secretStart = nameStart + close + 2;
+    const secretWindowEnd = Math.min(text.length, secretStart + PAREN_USERINFO_SCAN);
+    const secretWindow = text.slice(secretStart, secretWindowEnd);
+    // Once the "):" landmark is found, this is the dangerous shape, so the secret is always masked from here on,
+    // through an "@", another character that could not be part of it, or the scan bound itself (fail-closed).
+    const stopChar = secretWindow.search(/[@\s()<>"']/);
+    const atStop = stopChar >= 0 && secretWindow[stopChar] === '@';
+    const secretEnd = stopChar < 0 ? secretWindowEnd : secretStart + stopChar;
+    return { start: m.index, scheme: m[1]!, nameStart, secretStart, secretEnd, end: atStop ? secretEnd + 1 : secretEnd };
+  }
+  return null;
+}
+
+/** Masks every "scheme://(name):secret@" userinfo, leaving the scheme and an unmasked "***@" behind so the rest
+ * of the URL (host, path, query, fragment) reaches the ordinary run-based masking below as one unbroken run. */
+export function maskParenUserinfo(text: string): string {
+  let out = '';
+  let pos = 0;
+  for (let m = nextParenUserinfo(text, pos); m !== null; m = nextParenUserinfo(text, pos)) {
+    out += text.slice(pos, m.start) + `${m.scheme}://***@`;
+    pos = m.end;
+  }
+  return out + text.slice(pos);
+}
+
+/** Whether position `at` falls inside the parenthesized name or the secret of a nextParenUserinfo match, the same
+ * span maskParenUserinfo hides. The search starts and stops within the same HIDDEN_SCAN window
+ * insideHiddenUrlPart itself uses, so a link deep inside a large document does not rescan the whole source. */
 function insideParenUserinfo(text: string, at: number): boolean {
   const from = Math.max(0, at - HIDDEN_SCAN);
   const to = Math.min(text.length, at + HIDDEN_SCAN);
-  const window = text.slice(from, to);
-  const re = new RegExp(PAREN_USERINFO.source, PAREN_USERINFO.flags);
-  for (let m = re.exec(window); m !== null; m = re.exec(window)) {
-    const hiddenStart = from + m.index + m[1]!.length + 3; // scheme + "://", at the "("
-    const hiddenEnd = from + m.index + m[0].length - 1; // at the "@"
-    if (at >= hiddenStart && at < hiddenEnd) return true;
+  let pos = from;
+  while (pos < to) {
+    const m = nextParenUserinfo(text, pos);
+    if (!m || m.start >= to) return false;
+    const hiddenStart = m.nameStart - 1; // the "("
+    if (at >= hiddenStart && at < m.secretEnd) return true;
+    pos = m.end;
   }
   return false;
 }
-
 /**
  * Whether position at of a source text lies in a part of a URL that maskHref hides: user information, a query
  * value or the fragment. GFM links a bare address it finds inside another URL on its own: the part after the
@@ -351,7 +415,12 @@ export function redactText(text: string): string {
  * and the fragment. Nothing else moves, and nothing is normalized, so every other number stays as it was.
  */
 export function hideUrlSecrets(text: string): string {
-  return rewriteUrlRuns(text, withoutUrlSecrets);
+  // maskParenUserinfo runs first, the same order redactText uses, so a numeric password in the
+  // parenthesized-userinfo shape cannot reach extractNumbers as plain text (P-N1, found by an outside
+  // review 2026-09-28): up to here only redactText applied it, so visibleNumbers below still read a
+  // number straight out of an unmasked "(name):secret@" that the general run-based scan cannot see as
+  // one run (see the comment on PAREN_USERINFO_START above).
+  return rewriteUrlRuns(maskParenUserinfo(text), withoutUrlSecrets);
 }
 
 /**

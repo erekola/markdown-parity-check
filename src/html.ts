@@ -18,7 +18,24 @@ export interface HtmlExtractOptions {
   maxDepth?: number;
 }
 
-export class HtmlExtractError extends Error {}
+export class HtmlExtractError extends Error {
+  /** The user-supplied value the message names (here, --selector), capped the way worker.js's own cut()
+   * caps a reflected value: in its own field, not only interpolated into the sentence, and bounded so an
+   * arbitrarily long selector cannot make the error text arbitrarily long (V10-P3-01, found by an outside
+   * review 2026-09-28). Report rendering still masks every string, value included, through redactText. */
+  value?: string;
+  constructor(message: string, value?: string) {
+    super(message);
+    if (value !== undefined) this.value = capValue(value);
+  }
+}
+
+/** Caps a value that a message reflects back to the caller, the same length worker.js's own cut() uses, and
+* drops a trailing lone high surrogate a plain slice can leave behind. */
+function capValue(s: string, n = 120): string {
+  const cut = s.slice(0, n);
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+}
 
 /** Default nesting limit for both extractors. The extraction walks the tree recursively, and a document
  * nested a few thousand levels deep exhausts the call stack (measured 2026-09-11: 5 000 nested div
@@ -365,7 +382,11 @@ function taskState(li: Element): boolean | null {
   const stack: ChildNode[] = [...li.children].reverse();
   while (stack.length > 0) {
     const node = stack.pop()!;
-    if (!(node instanceof Element) || node.name === 'ul' || node.name === 'ol') continue;
+    // A <template> element's content is inert: the browser never renders it as part of the document, the
+    // same reason hiddenInPage above treats it like a hidden ancestor for the main extraction. taskState had
+    // no matching check, so a checkbox sitting in a <template> answered for a later, real checkbox in the
+    // same item (found by an outside review 2026-09-28).
+    if (!(node instanceof Element) || node.name === 'ul' || node.name === 'ol' || node.name === 'template') continue;
     if (hiddenAttr(node)) continue;
     if (node.name === 'input' && (node.attribs['type'] ?? '').toLowerCase() === 'checkbox') return node.attribs['checked'] !== undefined;
     for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]!);
@@ -409,6 +430,11 @@ function starlightCode(pre: Element): string {
   const meaningful = pre.children.filter((node) => !(node instanceof Text && !node.data.trim()));
   const code = meaningful.length === 1 ? meaningful[0] : null;
   if (!(code instanceof Element) || code.name !== 'code') return visibleCode(pre.children);
+  // The specialized shape below reads code.children directly and never passes through visibleCode, so a
+  // hidden or aria-hidden <code> wrapper (the whole block, not one .ec-line inside it) was never checked and
+  // its lines were exported as if visible (found by an outside review 2026-09-28). A hidden wrapper has no
+  // visible code at all, the same outcome visibleCode itself gives a hidden element anywhere else.
+  if (hiddenAttr(code)) return '';
   const lines = code.children.filter((node) => !(node instanceof Text && !node.data.trim()));
   if (lines.length === 0 || !lines.every((node) => node instanceof Element && node.name === 'div' && hasClass(node, 'ec-line'))) return visibleCode(pre.children);
   // A gutter (line numbers from a plugin) sits beside the code as a direct child of the line; it is not code text.
@@ -514,13 +540,18 @@ function handleStarlightTabs(ctx: Ctx, component: Element): void {
  * absent, empty or "1" value is the default and is not a span. An unparseable value is treated as a span too,
  * because a plain grid reading cannot tell what it means either. */
 function hasSpan(el: Element): boolean {
-  const spans = (attr: string): boolean => {
+  // rowspan="0" is a distinct HTML value: the cell extends through every remaining row of its row group, so
+  // it moves a following row's cell into a different column just as rowspan="2" does, but it was read as
+  // n > 1 like an ordinary count and 0 failed that test (found by an outside review 2026-09-28). colspan has
+  // no such magic zero value in the HTML parsing algorithm, so its own zero stays "not a span".
+  const spans = (attr: string, zeroIsSpan: boolean): boolean => {
     const v = el.attribs[attr];
     if (v === undefined) return false;
     const n = Number.parseInt(v, 10);
-    return !Number.isFinite(n) || n > 1;
+    if (!Number.isFinite(n)) return true;
+    return n > 1 || (zeroIsSpan && n === 0);
   };
-  return spans('rowspan') || spans('colspan');
+  return spans('rowspan', true) || spans('colspan', false);
 }
 
 function handleTable(ctx: Ctx, table: Element): void {
@@ -592,10 +623,10 @@ function pickRoot(doc: Document, selector: string | undefined, notes: string[], 
     try {
       matches = (selectAll(selector, doc.children) as AnyNode[]).filter((n): n is Element => n instanceof Element);
     } catch (err) {
-      throw new HtmlExtractError(`Invalid selector "${selector}": ${(err as Error).message}`);
+      throw new HtmlExtractError(`Invalid selector: ${(err as Error).message}`, selector);
     }
-    if (matches.length === 0) throw new HtmlExtractError(`Selector "${selector}" matched no element.`);
-    if (matches.length > 1) notes.push(`Selector "${selector}" matched ${matches.length} elements; the first in document order was used.`);
+    if (matches.length === 0) throw new HtmlExtractError('Selector matched no element.', selector);
+    if (matches.length > 1) notes.push(`Selector "${capValue(selector)}" matched ${matches.length} elements; the first in document order was used.`);
     return { root: matches[0] as Element, strategy: `selector:${selector}`, confidence: 'high' };
   }
   // A candidate the page hides is not its main content. Up to 0.2.12 the first candidate was taken as it was, so a

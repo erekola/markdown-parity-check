@@ -88,10 +88,27 @@ export interface CliArgs {
   version: boolean;
 }
 
-function positiveInt(name: string, raw: string | undefined, fallback: number): number {
+// The largest delay Node's own timer accepts (2^31 - 1 ms, about 24.8 days). A larger value is not
+// rejected by Node: it becomes a roughly 1 ms timeout instead, with a TimeoutOverflowWarning, so an
+// error built from the value the caller gave would misreport what is actually going to happen
+// (P-N4, found by an outside review 2026-09-28).
+const MAX_TIMEOUT_MS = 2147483647;
+
+function positiveInt(name: string, raw: string | undefined, fallback: number, max = Number.MAX_SAFE_INTEGER): number {
   if (raw === undefined) return fallback;
-  if (!/^\d+$/.test(raw) || Number(raw) <= 0) throw new CliError(`${name} must be a positive integer (got "${raw}").`);
-  return Number(raw);
+  // maskUrl masks the whole value in one piece before it reaches a CliError message, unlike the generic
+  // report redactor further down the pipeline (redactText), whose run-based URL detection splits at a raw
+  // space inside the value and lets a fragment such as a password through unmasked (P-N3, found by an
+  // outside review 2026-09-28); a CLI argument is attacker input the moment it is echoed back in an error,
+  // whatever option it was given for.
+  const shown = () => maskUrl(raw);
+  if (!/^\d+$/.test(raw)) throw new CliError(`${name} must be a positive integer (got "${shown()}").`);
+  const n = Number(raw);
+  // A long enough run of digits overflows the IEEE 754 double to Infinity, which the old "> 0" check let
+  // through unrejected; Number.isFinite closes that, and max rejects a value this option cannot actually
+  // honor before it reaches the code that would silently reinterpret it (P-N4).
+  if (!Number.isFinite(n) || n <= 0 || n > max) throw new CliError(`${name} must be a positive integer, at most ${max} (got "${shown()}").`);
+  return n;
 }
 
 export function parseCliArgs(argv: string[]): CliArgs {
@@ -140,7 +157,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
     frontMatter,
     format,
     output: v.output,
-    timeoutMs: positiveInt('--timeout-ms', v['timeout-ms'], 15000),
+    timeoutMs: positiveInt('--timeout-ms', v['timeout-ms'], 15000, MAX_TIMEOUT_MS),
     maxBytes: positiveInt('--max-bytes', v['max-bytes'], 5 * 1024 * 1024),
     strict: v.strict ?? false,
     help: v.help ?? false,
@@ -319,14 +336,23 @@ export async function main(argv: string[], io: CliIo = { stdout: (s) => process.
     report = run(html, markdown, options);
   } catch (err) {
     let message: string;
+    let value: string | undefined;
     if (err instanceof FetchError) message = `Fetch failed (${err.kind}) for ${err.url}: ${err.message}`;
-    else if (err instanceof CliError || err instanceof RunError) message = err.message;
-    else message = `Unexpected error: ${(err as Error).stack ?? String(err)}`;
-    report = errorReport(options, html?.meta ?? null, markdown?.meta ?? null, message);
+    else if (err instanceof CliError) message = err.message;
+    else if (err instanceof RunError) {
+      message = err.message;
+      value = err.value;
+    } else message = `Unexpected error: ${(err as Error).stack ?? String(err)}`;
+    report = errorReport(options, html?.meta ?? null, markdown?.meta ?? null, message, value);
     try {
       emit(report, args, io);
     } catch (e2) {
-      io.stderr(`Error: ${(e2 as Error).message}\n`);
+      // The report itself could not be written (P-N5, found by an outside review 2026-09-28): up to here
+      // this fell through to a plain stderr line only, even under --format json, unlike every other error
+      // path in this function, which puts a JSON report on stdout too when JSON was asked for.
+      const writeMessage = (e2 as Error).message;
+      if (args.format === 'json') io.stdout(renderJson(errorReport(options, html?.meta ?? null, markdown?.meta ?? null, writeMessage)));
+      io.stderr(`Error: ${writeMessage}\n`);
     }
     io.stderr(`Error: ${message}\n`);
     return 2;
@@ -334,7 +360,11 @@ export async function main(argv: string[], io: CliIo = { stdout: (s) => process.
   try {
     emit(report, args, io);
   } catch (err) {
-    io.stderr(`Error: ${(err as Error).message}\n`);
+    // Same P-N5 fallback as the error path above: a write failure got only a plain stderr line before,
+    // even under --format json.
+    const writeMessage = (err as Error).message;
+    if (args.format === 'json') io.stdout(renderJson(errorReport(options, html?.meta ?? null, markdown?.meta ?? null, writeMessage)));
+    io.stderr(`Error: ${writeMessage}\n`);
     return 2;
   }
   return report.summary.exitCode;

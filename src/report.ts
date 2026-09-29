@@ -60,7 +60,9 @@ export function renderText(input: Report): string {
   const s = report.summary;
   out.push(`${TOOL_NAME} ${report.toolVersion} (${report.mode} mode${s.strict ? ', strict' : ''})`);
   if (s.result === 'error') {
-    out.push(`Result: ERROR. ${s.error ?? 'The comparison could not be completed.'}`);
+    // errorValue (V10-P3-01) is the specific input value the message names, already capped where it was
+    // built; shown as its own labelled part rather than folded back into the sentence.
+    out.push(`Result: ERROR. ${s.error ?? 'The comparison could not be completed.'}${s.errorValue !== undefined ? ` (value: "${s.errorValue}")` : ''}`);
   } else {
     out.push(`Result: ${s.result.toUpperCase()} (${s.errors} error(s), ${s.warnings} warning(s), ${s.infos} info)`);
   }

@@ -359,6 +359,16 @@ function handleRawHtml(ctx: Ctx, value: string, line: number | undefined): void 
       const absolute = line !== undefined && inner !== undefined ? line + inner - 1 : line;
       ctx.blocks.push({ ...b, location: { line: absolute, blockIndex: ctx.blocks.length } });
     }
+    // The nested extraction's own structural "not compared" issues (a spanned table, a reversed list) were
+    // read off parsed.blocks only up to here; parsed.issues was silently dropped, so a page whose span or
+    // reversed numbering lived inside a raw HTML block in the Markdown showed only the generic
+    // MARKDOWN_RAW_HTML_PARSED note about readers that do not render HTML, with no disclosure that the span
+    // or the numbering itself was not reliably compared (N-P-raw-html, found by an outside review
+    // 2026-09-28). The line offset matches the block loop just above.
+    for (const i of parsed?.issues ?? []) {
+      const absolute = line !== undefined && i.line !== undefined ? line + i.line - 1 : line;
+      ctx.issues.push({ ...i, line: absolute });
+    }
     ctx.issues.push({ code: 'MARKDOWN_RAW_HTML_PARSED', severity: 'info', message: `A raw HTML block in the Markdown was parsed as HTML (${blocks.length} block(s)); Markdown readers that do not render HTML will not see it.`, line, excerpt: excerpt(textOnly) });
   } else if (textOnly !== '') {
     ctx.issues.push({ code: 'MARKDOWN_RAW_HTML_SKIPPED', severity: 'warning', message: 'A raw HTML block in the Markdown carries text that could not be parsed into blocks; it was not compared.', line, excerpt: excerpt(textOnly) });
