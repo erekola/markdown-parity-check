@@ -110,9 +110,9 @@ describe('P03: a checkbox inside a left-out subtree does not set the task state'
   });
 
   it('a checkbox in a nav, a template, a dialog or a role="navigation" element is ignored the same way', () => {
-    for (const wrapper of ['<nav>$</nav>', '<template>$</template>', '<dialog>$</dialog>', '<div role="navigation">$</div>']) {
-      const html = item(wrapper.replace('$', '<input type="checkbox" checked>') + '<input type="checkbox">Ship');
-      assert.deepEqual(codes(html, '- [x] Ship'), ['LIST_TASK_CHANGED:error'], wrapper);
+    for (const [open, close] of [['<nav>', '</nav>'], ['<template>', '</template>'], ['<dialog>', '</dialog>'], ['<div role="navigation">', '</div>']]) {
+      const html = item(open + '<input type="checkbox" checked>' + close + '<input type="checkbox">Ship');
+      assert.deepEqual(codes(html, '- [x] Ship'), ['LIST_TASK_CHANGED:error'], open);
     }
   });
 
