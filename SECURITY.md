@@ -6,7 +6,7 @@ Security fixes target the latest published release. Update to that release when 
 
 ## Reporting a vulnerability
 
-Report suspected vulnerabilities privately to info@turva.dev. Include the affected version, reproduction steps and the expected impact. Remove credentials and private content from examples.
+Report suspected vulnerabilities privately to info@turva.dev. Include the affected version, reproduction steps and the expected impact. Remove credentials and private content from examples. Send encrypted reports to erik@turva.dev. The OpenPGP key is at https://turva.dev/pgp-key.asc.
 
 Please do not open a public issue for security reports. You can expect an initial response within one business day. Confirmed issues will be prioritized and you will be kept informed of progress.
 

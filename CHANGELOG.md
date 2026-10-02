@@ -2,6 +2,12 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.24 (2026-10-03)
+
+The tool compares and reports exactly what it did before. This release changes documentation only.
+
+- SECURITY.md names an encrypted route for reports: erik@turva.dev with the OpenPGP key at https://turva.dev/pgp-key.asc.
+
 ## 0.2.23 (2026-10-02)
 
 No change to what the tool compares or reports. Documentation and release notes only.
