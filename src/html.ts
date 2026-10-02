@@ -58,6 +58,13 @@ export function nestingDepth(node: ParentNode): number {
 
 const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'template', 'nav', 'iframe', 'svg', 'canvas', 'object', 'embed', 'map', 'form', 'button', 'input', 'select', 'textarea', 'dialog']);
 const SKIP_ROLES = new Set(['navigation', 'banner', 'contentinfo', 'complementary', 'search', 'menu', 'menubar', 'dialog']);
+/** Whether an opening tag starts a subtree this extraction leaves out: the tag and role lists of isSkipped. The
+ * Markdown side asks it for inline raw HTML, so a button or a script in a Markdown paragraph is left out the way
+ * it is in an HTML paragraph (0.2.22, found by an outside review 2026-10-02). */
+export function opensExcludedSubtree(name: string, attribs: Record<string, string>): boolean {
+  if (SKIP_TAGS.has(name)) return true;
+  return SKIP_ROLES.has((attribs['role'] ?? '').toLowerCase());
+}
 const BLOCK_TAGS = new Set(['address', 'article', 'aside', 'blockquote', 'details', 'summary', 'dd', 'dl', 'dt', 'div', 'fieldset', 'figcaption', 'figure', 'footer', 'header', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hgroup', 'hr', 'li', 'main', 'ol', 'p', 'pre', 'section', 'table', 'ul', 'body', 'html', 'center', 'tr', 'td', 'th', 'thead', 'tbody', 'tfoot', 'caption']);
 const HEADING_RE = /^h([1-6])$/;
 
@@ -161,7 +168,12 @@ function visibleCode(nodes: ChildNode[], profile: 'generic' | 'starlight' = 'gen
   for (const node of nodes) {
     if (node instanceof Text) out += node.data;
     // The root argument only matters for header and footer directly under body, which cannot occur inside a pre.
-    else if (node instanceof Element && !isSkipped(node, node, profile)) out += visibleCode(node.children, profile);
+    else if (node instanceof Element && !isSkipped(node, node, profile)) {
+      // A visible <br> is a line break in a pre; up to 0.2.21 it contributed nothing, so two lines read as one
+      // joined word (0.2.22, found by an outside review 2026-10-02).
+      if (node.name === 'br') out += '\n';
+      else out += visibleCode(node.children, profile);
+    }
   }
   return out;
 }
@@ -336,7 +348,7 @@ function listInfo(ctx: Ctx, li: Element): ListInfo {
     if (p.name === 'ul' || p.name === 'ol') lists++;
     if (p === ctx.root) break;
   }
-  const info: ListInfo = { ordered, depth: ctx.listBase + Math.max(0, lists - 1), checked: taskState(li) };
+  const info: ListInfo = { ordered, depth: ctx.listBase + Math.max(0, lists - 1), checked: taskState(li, ctx.profile) };
   if (ordered && parent) {
     const reversed = parent.attribs['reversed'] !== undefined;
     const ordinal = listOrdinals(ctx, parent).get(li);
@@ -383,7 +395,7 @@ function listOrdinals(ctx: Ctx, ol: Element): Map<Element, number> {
  * checkbox hidden by the hidden or aria-hidden attribute, or wrapped in a hidden ancestor, is skipped like any
  * other hidden content: its subtree is never pushed onto the stack, so an earlier hidden checkbox cannot answer
  * for a later visible one (0.2.16, found by an outside review 2026-09-28). */
-function taskState(li: Element): boolean | null {
+function taskState(li: Element, profile: 'generic' | 'starlight' = 'generic'): boolean | null {
   const stack: ChildNode[] = [...li.children].reverse();
   while (stack.length > 0) {
     const node = stack.pop()!;
@@ -391,9 +403,16 @@ function taskState(li: Element): boolean | null {
     // same reason hiddenInPage above treats it like a hidden ancestor for the main extraction. taskState had
     // no matching check, so a checkbox sitting in a <template> answered for a later, real checkbox in the
     // same item (found by an outside review 2026-09-28).
-    if (!(node instanceof Element) || node.name === 'ul' || node.name === 'ol' || node.name === 'template') continue;
-    if (hiddenAttr(node)) continue;
-    if (node.name === 'input' && (node.attribs['type'] ?? '').toLowerCase() === 'checkbox') return node.attribs['checked'] !== undefined;
+    if (!(node instanceof Element) || node.name === 'ul' || node.name === 'ol') continue;
+    // The checkbox itself is the one skipped tag whose state is wanted; a hidden one is still ignored.
+    if (node.name === 'input' && (node.attribs['type'] ?? '').toLowerCase() === 'checkbox') {
+      if (hiddenAttr(node)) continue;
+      return node.attribs['checked'] !== undefined;
+    }
+    // Every other subtree the extraction leaves out (a form, a nav, a template, a role such as navigation, hidden
+    // and aria-hidden) is never walked, so a checkbox inside one cannot answer for the item (0.2.22, found by an
+    // outside review 2026-10-02).
+    if (isSkipped(node, node, profile)) continue;
     for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]!);
   }
   return null;
@@ -468,7 +487,10 @@ function starlightLineText(children: ChildNode[], line: Element, diffMarkers: bo
   const collect = (nodes: ChildNode[]): void => {
     for (const node of nodes) {
       if (node instanceof Text) out += (node === target ? (inserted ? '+' : '-') : '') + node.data;
-      else if (node instanceof Element && !isSkipped(node, node, 'starlight')) collect(node.children);
+      else if (node instanceof Element && !isSkipped(node, node, 'starlight')) {
+        if (node.name === 'br') out += '\n';
+        else collect(node.children);
+      }
     }
   };
   collect(children);
@@ -625,6 +647,18 @@ function hiddenInPage(el: Element): boolean {
   return false;
 }
 
+/** Whether the element, or any ancestor, is a subtree the extraction leaves out (navigation, a dialog, a banner
+ * role and the rest of isSkipped). A candidate root inside one is page chrome, not main content. A plain <form> is
+ * the one exception: a page-wide form (ASP.NET WebForms) wraps the real content, so a candidate inside it is kept
+ * (Erik's foreman decision 2026-10-02). A form with a left-out role still counts. */
+function inExcludedSubtree(el: Element): boolean {
+  for (let cur: ParentNode | null = el; cur instanceof Element; cur = cur.parent) {
+    if (cur.name === 'form' && cur !== el && !SKIP_ROLES.has((cur.attribs['role'] ?? '').toLowerCase())) continue;
+    if (isSkipped(cur, el)) return true;
+  }
+  return false;
+}
+
 function pickRoot(doc: Document, selector: string | undefined, notes: string[], issues: ExtractionIssue[]): { root: Element; strategy: string; confidence: 'high' | 'low' } {
   if (selector) {
     let matches: Element[];
@@ -643,8 +677,12 @@ function pickRoot(doc: Document, selector: string | undefined, notes: string[], 
   // one nested inside another (an <article> inside an <article>) is part of it (found by an outside review 2026-09-26).
   for (const tag of ['main', 'article', '[role=main]']) {
     const matches = (selectAll(tag, doc.children) as AnyNode[]).filter((n): n is Element => n instanceof Element);
-    const visible = matches.filter((el) => !hiddenInPage(el));
-    if (matches.length > visible.length) notes.push(`${matches.length - visible.length} hidden <${tag}> element(s) were not used as the main content.`);
+    const shown = matches.filter((el) => !hiddenInPage(el));
+    // A candidate inside excluded content, such as an <article> inside a <nav>, is left out the same way: up to
+    // 0.2.21 it became the root and the real body was never compared (0.2.22, found by an outside review 2026-10-02).
+    const visible = shown.filter((el) => !inExcludedSubtree(el));
+    if (matches.length > shown.length) notes.push(`${matches.length - shown.length} hidden <${tag}> element(s) were not used as the main content.`);
+    if (shown.length > visible.length) notes.push(`${shown.length - visible.length} <${tag}> element(s) inside left-out content (navigation, a form, a dialog and the like) were not used as the main content.`);
     if (visible.length >= 1) {
       const set = new Set(visible);
       const outer = visible.filter((el) => {

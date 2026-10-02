@@ -94,6 +94,27 @@ export interface CliArgs {
 // (P-N4, found by an outside review 2026-09-28).
 const MAX_TIMEOUT_MS = 2147483647;
 
+/** A rejected option value as it may be echoed in an error. maskUrl handles anything the URL parser reads with a
+ * host. When the value holds an '@' and the parser finds no host (user:secret@example.com parses as an opaque URL,
+ * and some shapes do not parse at all), everything up to the last '@' is shown as ***, whatever slashes, question
+ * marks or hashes come before it, as the hosted maskLocation does. What follows the last '@' has its query values
+ * masked and its fragment dropped. */
+function maskOption(value: string): string {
+  const plain = value.replace(/[\t\n\r]/g, '');
+  let hasHost = false;
+  try {
+    hasHost = new URL(plain).host !== '';
+  } catch {
+    hasHost = false;
+  }
+  const at = plain.lastIndexOf('@');
+  if (hasHost || at < 0) return maskUrl(value);
+  const rest = plain.slice(at + 1);
+  const stop = rest.search(/[?#]/);
+  const tail = stop < 0 ? rest : rest.slice(0, stop) + (rest[stop] === '?' ? '?***' : '');
+  return '***@' + tail;
+}
+
 function positiveInt(name: string, raw: string | undefined, fallback: number, max = Number.MAX_SAFE_INTEGER): number {
   if (raw === undefined) return fallback;
   // maskUrl masks the whole value in one piece before it reaches a CliError message, unlike the generic
@@ -101,7 +122,7 @@ function positiveInt(name: string, raw: string | undefined, fallback: number, ma
   // space inside the value and lets a fragment such as a password through unmasked (P-N3, found by an
   // outside review 2026-09-28); a CLI argument is attacker input the moment it is echoed back in an error,
   // whatever option it was given for.
-  const shown = () => maskUrl(raw);
+  const shown = () => maskOption(raw);
   if (!/^\d+$/.test(raw)) throw new CliError(`${name} must be a positive integer (got "${shown()}").`);
   const n = Number(raw);
   // A long enough run of digits overflows the IEEE 754 double to Infinity, which the old "> 0" check let
@@ -142,10 +163,13 @@ export function parseCliArgs(argv: string[]): CliArgs {
   const v = parsed.values;
   const htmlProfile = v['html-profile'];
   if (htmlProfile !== 'generic' && htmlProfile !== 'starlight') throw new CliError('--html-profile must be generic or starlight.');
+  // A rejected option value is echoed back in the error, so it is masked like the numeric and base-URL values above:
+  // a raw space splits the later report redactor's URL detection and let a password through (P01, found by an
+  // outside review 2026-10-02).
   const format = v.format;
-  if (format !== 'text' && format !== 'json') throw new CliError(`--format must be text or json (got "${format}").`);
+  if (format !== 'text' && format !== 'json') throw new CliError(`--format must be text or json (got "${maskOption(format)}").`);
   const frontMatter = v['front-matter'];
-  if (frontMatter !== 'keep' && frontMatter !== 'strip') throw new CliError(`--front-matter must be keep or strip (got "${frontMatter}").`);
+  if (frontMatter !== 'keep' && frontMatter !== 'strip') throw new CliError(`--front-matter must be keep or strip (got "${maskOption(frontMatter)}").`);
   const args: CliArgs = {
     htmlProfile,
     url: v.url,
@@ -185,7 +209,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
         // redactText pass over stderr/JSON: a raw space breaks that pass's run-based URL detection into
         // fragments too small to recognize as one URL, leaving user information such as a password visible
         // (0.2.16, found by an outside review 2026-09-28). maskUrl handles the whole value correctly regardless.
-        throw new CliError(`--base-url must be an absolute http(s) URL (got "${maskUrl(args.baseUrl)}").`);
+        throw new CliError(`--base-url must be an absolute http(s) URL (got "${maskOption(args.baseUrl)}").`);
       }
     }
   }

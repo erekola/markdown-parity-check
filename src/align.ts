@@ -12,6 +12,8 @@ export interface Pair {
   b: number;
   kind: 'exact' | 'moved' | 'loose' | 'similar';
   similarity: number;
+  /** Set on a loose pair whose order disagrees with the exact and loose pairs around it (0.2.22). */
+  reordered?: boolean;
 }
 
 export interface Alignment {
@@ -156,6 +158,54 @@ function lcs(keysA: string[], keysB: string[], maxPairs: number): Array<[number,
   return out;
 }
 
+/**
+ * Flags loose pairs that sit out of order. An exact pair that is out of order is already 'moved', but a block that
+ * was moved and edited is paired by its loose key and kept its kind, so the reversal went unreported (0.2.22, found
+ * by an outside review 2026-10-02). The exact and loose pairs, in HTML order, form a sequence of Markdown positions;
+ * the heaviest increasing run of it is the order the page keeps, with an exact pair weighing more than all loose
+ * pairs together so that no exact pair is ever the one dropped. A loose pair outside the run is flagged. One pass
+ * with a Fenwick tree over the Markdown positions, O(n log n).
+ */
+function markReorderedLoose(pairs: Pair[], markdownBlocks: number): void {
+  const chain = pairs.filter((p) => p.kind === 'exact' || p.kind === 'loose');
+  const looseCount = chain.reduce((n, p) => n + (p.kind === 'loose' ? 1 : 0), 0);
+  if (looseCount < 1 || chain.length < 2) return;
+  const exactWeight = looseCount + 1;
+  const treeWeight = new Float64Array(markdownBlocks + 2);
+  const treeIndex = new Int32Array(markdownBlocks + 2).fill(-1);
+  const total = new Float64Array(chain.length);
+  const previous = new Int32Array(chain.length).fill(-1);
+  let bestEnd = -1;
+  let bestTotal = 0;
+  chain.forEach((p, k) => {
+    let w = 0;
+    let from = -1;
+    for (let x = p.b; x > 0; x -= x & -x) {
+      if (treeWeight[x]! > w) {
+        w = treeWeight[x]!;
+        from = treeIndex[x]!;
+      }
+    }
+    total[k] = w + (p.kind === 'exact' ? exactWeight : 1);
+    previous[k] = from;
+    for (let x = p.b + 1; x <= markdownBlocks + 1; x += x & -x) {
+      if (total[k]! > treeWeight[x]!) {
+        treeWeight[x] = total[k]!;
+        treeIndex[x] = k;
+      }
+    }
+    if (total[k]! > bestTotal) {
+      bestTotal = total[k]!;
+      bestEnd = k;
+    }
+  });
+  const kept = new Set<number>();
+  for (let k = bestEnd; k >= 0; k = previous[k]!) kept.add(k);
+  chain.forEach((p, k) => {
+    if (p.kind === 'loose' && !kept.has(k)) p.reordered = true;
+  });
+}
+
 export function align(a: Block[], b: Block[], limits?: Partial<AlignmentLimits>): Alignment {
   const lim = resolveLimits(limits);
   checkAlignmentLimit(a.length, b.length, lim.maxAlignmentPairs);
@@ -258,6 +308,7 @@ export function align(a: Block[], b: Block[], limits?: Partial<AlignmentLimits>)
   }
 
   pairs.sort((x, y) => x.a - y.a || x.b - y.b);
+  markReorderedLoose(pairs, b.length);
   const unmatchedA: number[] = [];
   const unmatchedB: number[] = [];
   for (let i = 0; i < a.length; i++) if (!usedA.has(i)) unmatchedA.push(i);

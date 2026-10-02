@@ -2,7 +2,7 @@
 
 import { align, resolveLimits, AlignmentLimitError, UNCERTAIN_THRESHOLD, type AlignmentLimits, type Pair } from './align.js';
 import type { Block, Extraction, Finding, FindingSide, Link } from './model.js';
-import { excerpt, hrefDifference, looseNormalize, maskHref, redactText, relativeHrefRelation, visibleNumbers } from './normalize.js';
+import { codeWhitespaceKey, excerpt, hrefDifference, looseNormalize, maskHref, redactText, relativeHrefRelation, visibleNumbers } from './normalize.js';
 
 export interface Coverage {
   htmlBlocks: number;
@@ -163,9 +163,16 @@ export function pairLinks(hLinks: Link[], mLinks: Link[], maxWork = Number.POSIT
   });
   // Step 3: the links still unpaired, by loosely normalized text.
   const looseLists = new Map<string, number[]>();
+  // The unused Markdown links whose label is empty once loose normalization has removed the punctuation ("?", "!"):
+  // they have no text key, so they pair by an unchanged target instead (0.2.22, found by an outside review 2026-10-02).
+  const emptyUnused: number[] = [];
   used.forEach((u, i) => {
-    const k = u ? '' : looseNormalize(mLinks[i]!.text);
-    if (k === '') return;
+    if (u) return;
+    const k = looseNormalize(mLinks[i]!.text);
+    if (k === '') {
+      emptyUnused.push(i);
+      return;
+    }
     const list = looseLists.get(k);
     if (list) list.push(i);
     else looseLists.set(k, [i]);
@@ -179,7 +186,27 @@ export function pairLinks(hLinks: Link[], mLinks: Link[], maxWork = Number.POSIT
   const stillMissing: number[] = [];
   for (const hi of missing) {
     const k = looseNormalize(hLinks[hi]!.text);
-    const list = k === '' ? undefined : looseLists.get(k);
+    if (k === '') {
+      let found = -1;
+      for (const i of emptyUnused) {
+        work++;
+        if (work > maxWork) {
+          throw new AlignmentLimitError(`Comparison limit exceeded: pairing punctuation-only link labels by target needs more than ${maxWork} comparisons among ${hLinks.length} HTML and ${mLinks.length} Markdown links. Narrow the HTML content with --selector or compare a smaller page.`);
+        }
+        if (!used[i] && sameTarget(hLinks[hi]!, mLinks[i]!)) {
+          found = i;
+          break;
+        }
+      }
+      if (found < 0) {
+        stillMissing.push(hi);
+      } else {
+        used[found] = true;
+        pairs.push([hi, found]);
+      }
+      continue;
+    }
+    const list = looseLists.get(k);
     const n = looseHeads.get(k) ?? 0;
     if (!list || n >= list.length) {
       stillMissing.push(hi);
@@ -272,8 +299,11 @@ function compareTables(out: Finding[], h: Block, m: Block): void {
   if (h.spanned || m.spanned) return;
   const hc = h.cells ?? [];
   const mc = m.cells ?? [];
-  const hCols = Math.max(0, ...hc.map((r) => r.length));
-  const mCols = Math.max(0, ...mc.map((r) => r.length));
+  // A loop, not Math.max(...rows): a spread passes one argument per row and a table of about 130 000 rows overran the
+  // call stack with an unwrapped RangeError (0.2.22, found by an outside review 2026-10-02).
+  const widest = (rows: string[][]): number => rows.reduce((n, r) => (r.length > n ? r.length : n), 0);
+  const hCols = widest(hc);
+  const mCols = widest(mc);
   if (hc.length !== mc.length || hCols !== mCols) {
     out.push({ code: 'TABLE_SHAPE_CHANGED', severity: 'error', direction: 'both', message: `Table shape differs: HTML ${hc.length}x${hCols}, Markdown ${mc.length}x${mCols} (rows x columns).`, html: side(h), markdown: side(m), before: `${hc.length}x${hCols}`, after: `${mc.length}x${mCols}` });
     return;
@@ -290,7 +320,7 @@ function compareTables(out: Finding[], h: Block, m: Block): void {
 }
 
 function comparePair(out: Finding[], p: Pair, h: Block, m: Block, bothBases: boolean, maxSimilarityWork: number): void {
-  if (p.kind === 'moved') {
+  if (p.kind === 'moved' || p.reordered) {
     out.push({ code: 'ORDER_CHANGED', severity: 'warning', direction: 'both', message: `The ${label(h)} appears in a different position in the Markdown.`, html: side(h), markdown: side(m) });
   }
   if (h.type !== m.type) {
@@ -309,7 +339,9 @@ function comparePair(out: Finding[], p: Pair, h: Block, m: Block, bothBases: boo
     const hc = h.code ?? '';
     const mc = m.code ?? '';
     if (hc !== mc) {
-      if (h.text === m.text) out.push({ code: 'CODE_WHITESPACE_CHANGED', severity: 'warning', direction: 'both', message: 'Code block differs only in whitespace or indentation.', html: side(h), markdown: side(m) });
+      // Only whitespace may differ: the prose text normalizer also applies NFC and drops zero width characters,
+      // which would call a changed soft hyphen a whitespace edit (0.2.22, found by an outside review 2026-10-02).
+      if (codeWhitespaceKey(hc) === codeWhitespaceKey(mc)) out.push({ code: 'CODE_WHITESPACE_CHANGED', severity: 'warning', direction: 'both', message: 'Code block differs only in whitespace or indentation.', html: side(h), markdown: side(m) });
       else out.push({ code: 'TEXT_CHANGED', severity: 'error', direction: 'both', message: 'Code block content differs.', html: side(h), markdown: side(m), before: excerpt(hc), after: excerpt(mc) });
     }
   } else if (h.text !== m.text) {

@@ -5,8 +5,8 @@ import { gfm } from 'micromark-extension-gfm';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import type { Nodes, Parent, PhrasingContent, Root, RootContent, Table } from 'mdast';
 import type { Block, Extraction, ExtractionIssue, Link, ListInfo } from './model.js';
-import { extractHtml, HtmlDepthError, MAX_NESTING_DEPTH } from './html.js';
-import { parseDocument } from 'htmlparser2';
+import { extractHtml, HtmlDepthError, MAX_NESTING_DEPTH, opensExcludedSubtree } from './html.js';
+import { parseDocument, Parser } from 'htmlparser2';
 import { Element, Text, type ChildNode } from 'domhandler';
 import { excerpt, extractNumbers, insideHiddenUrlPart, looseNormalize, normalizeCode, resolveHref, strictNormalize } from './normalize.js';
 
@@ -49,6 +49,15 @@ interface Ctx {
   listDepth: number;
   /** The caller's nesting limit, handed on to every raw HTML block (the synthetic body wrapper is not counted). */
   maxDepth: number;
+  /** Raw HTML elements still open at the end of the last raw HTML block, from the outermost hidden one inward. A
+   * wrapper such as <div hidden> opened in one Markdown block and closed in a later one hides the blocks between
+   * (0.2.22). Empty when nothing hidden is open. */
+  wrappers: Wrapper[];
+}
+
+interface Wrapper {
+  name: string;
+  hidden: boolean;
 }
 
 interface InlineRun {
@@ -59,6 +68,8 @@ interface InlineRun {
 interface InlineTag {
   name: string;
   closing: boolean;
+  /** The tag ends in "/>" as written. */
+  selfClosing?: boolean;
   attribs: Record<string, string>;
 }
 
@@ -75,7 +86,7 @@ function parseInlineTag(value: string): InlineTag | null {
   const doc = parseDocument(v, { decodeEntities: true });
   const el = doc.children.find((c): c is Element => c instanceof Element);
   if (!el) return null;
-  return { name: el.name.toLowerCase(), closing: false, attribs: el.attribs };
+  return { name: el.name.toLowerCase(), closing: false, selfClosing: /\/\s*>$/.test(v), attribs: el.attribs };
 }
 
 /**
@@ -96,7 +107,15 @@ function inlineChildren(ctx: Ctx, children: PhrasingContent[], run: InlineRun, l
     // A hidden inline element hides its text in a reader that renders the HTML, as the same attribute does on the
     // HTML side. Up to 0.2.12 only the tags were dropped and the text between them stayed (found by an outside review
     // 2026-09-26). Its content up to the matching closing tag is left out; without one the tag is reported.
-    if (!tag.closing && (tag.attribs['hidden'] !== undefined || tag.attribs['aria-hidden'] === 'true')) {
+    // An inline element the HTML side leaves out (a button, a script, a nav, a role such as navigation) is skipped the
+    // same way: up to 0.2.21 only its tags were dropped and its text compared as visible (0.2.22, found by an outside
+    // review 2026-10-02).
+    // A left-out foreign element written as self-closing (<svg/>) is closed and empty, as the HTML parser reads it:
+    // there is nothing to skip through and nothing to report. Any other tag with a trailing slash is not closed in
+    // HTML (<button/> stays open), so it takes the normal path below. Void elements already end at their own tag.
+    if (!tag.closing && tag.selfClosing && FOREIGN_TAGS.has(tag.name) && opensExcludedSubtree(tag.name, tag.attribs)) continue;
+    const hiddenTag = tag.attribs['hidden'] !== undefined || tag.attribs['aria-hidden'] === 'true';
+    if (!tag.closing && (hiddenTag || opensExcludedSubtree(tag.name, tag.attribs))) {
       // A trailing "/>" on a non-void element is not a self-close in HTML: <span hidden/>text</span> does not
       // show "text" in a browser either, only a void element's own tag ends there. Up to 0.2.15 the slash alone
       // was read as a close, so a malformed but common self-closing spelling left hidden text visible (0.2.16,
@@ -105,7 +124,7 @@ function inlineChildren(ctx: Ctx, children: PhrasingContent[], run: InlineRun, l
       closes ??= closingTags(children);
       const end = closes.get(i) ?? -1;
       if (end < 0) {
-        ctx.issues.push({ code: 'MARKDOWN_INLINE_HTML_UNSUPPORTED', severity: 'warning', message: `A hidden inline <${tag.name}> has no matching </${tag.name}> in the same paragraph; its text was compared as visible.`, line: node.position?.start.line ?? line, excerpt: excerpt(node.value) });
+        ctx.issues.push({ code: 'MARKDOWN_INLINE_HTML_UNSUPPORTED', severity: 'warning', message: `A ${hiddenTag ? 'hidden' : 'left-out'} inline <${tag.name}> has no matching </${tag.name}> in the same paragraph; its text was compared as visible.`, line: node.position?.start.line ?? line, excerpt: excerpt(node.value) });
         continue;
       }
       i = end;
@@ -154,6 +173,7 @@ function inlineChildren(ctx: Ctx, children: PhrasingContent[], run: InlineRun, l
   }
 }
 
+const FOREIGN_TAGS = new Set(['svg', 'math']);
 const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
 
 /**
@@ -272,6 +292,7 @@ function handleTable(ctx: Ctx, table: Table): void {
 function handle(ctx: Ctx, node: RootContent, listItem?: ListInfo): void {
   switch (node.type) {
     case 'heading': {
+      if (hiddenWrapped(ctx)) return;
       const run: InlineRun = { text: '', links: [] };
       inlineChildren(ctx, node.children, run, node.position?.start.line);
       const text = strictNormalize(run.text);
@@ -279,6 +300,7 @@ function handle(ctx: Ctx, node: RootContent, listItem?: ListInfo): void {
       return;
     }
     case 'paragraph': {
+      if (hiddenWrapped(ctx)) return;
       const run: InlineRun = { text: '', links: [] };
       inlineChildren(ctx, node.children, run, node.position?.start.line);
       const text = strictNormalize(run.text);
@@ -286,12 +308,13 @@ function handle(ctx: Ctx, node: RootContent, listItem?: ListInfo): void {
       return;
     }
     case 'code': {
+      if (hiddenWrapped(ctx)) return;
       const code = normalizeCode(node.value);
       if (code.trim() !== '') push(ctx, { type: 'code', text: strictNormalize(code), code, links: [] }, node);
       return;
     }
     case 'table':
-      handleTable(ctx, node);
+      if (!hiddenWrapped(ctx)) handleTable(ctx, node);
       return;
     case 'list': {
       // A Markdown list shows its start number and counts on; its items carry the list kind, the nesting level and
@@ -318,6 +341,7 @@ function handle(ctx: Ctx, node: RootContent, listItem?: ListInfo): void {
       handleRawHtml(ctx, node.value, node.position?.start.line);
       return;
     case 'footnoteDefinition':
+      if (hiddenWrapped(ctx)) return;
       // Footnotes are not compared: an HTML page renders them as a numbered list with back links, which would not
       // read as the Markdown definitions. Up to 0.2.12 a definition was dropped without a trace, so a footnote added
       // to the Markdown passed strict mode (found by an outside review 2026-09-26). It is now a warning with its text.
@@ -342,13 +366,18 @@ function footnoteText(node: Nodes): string {
 /** A raw HTML block in Markdown is parsed with the HTML extractor so its content takes part in the
  * comparison; the report shows that this happened. Comments and bare tags without text yield nothing. */
 function handleRawHtml(ctx: Ctx, value: string, line: number | undefined): void {
+  // Wrappers an earlier raw block left open are written in front of this one, on the same line, so the extractor
+  // sees the same element tree a browser would and hides what a hidden wrapper still covers (P07).
+  const prefix = ctx.wrappers.map((w) => `<${w.name}${w.hidden ? ' hidden' : ''}>`).join('');
+  const fragment = prefix + value;
+  ctx.wrappers = openWrappers(fragment);
   // Text check for the fallback warning, taken from the parsed DOM rather than from regex stripping:
   // comments are not text, and script, style, template and noscript are page machinery on both sides,
-  // so their content does not count as skipped text.
-  const textOnly = visibleText(value);
+  // so their content does not count as skipped text. Hidden elements are left out, as in the extraction.
+  const textOnly = visibleText(fragment);
   let parsed: Extraction | null = null;
   try {
-    parsed = extractHtml(`<body>${value}</body>`, { selector: 'body', baseUrl: ctx.base, maxDepth: ctx.maxDepth + 1 });
+    parsed = extractHtml(`<body>${fragment}</body>`, { selector: 'body', baseUrl: ctx.base, maxDepth: ctx.maxDepth + 1 });
   } catch (err) {
     // A block nested past the caller's limit stops the comparison like the same nesting in the HTML page does
     // (run.ts turns this into the RunError, exit 2). Any other parse failure still falls back to the warning.
@@ -385,6 +414,31 @@ function handleRawHtml(ctx: Ctx, value: string, line: number | undefined): void 
 
 const MACHINERY = new Set(['script', 'style', 'template', 'noscript']);
 
+/** Whether a hidden raw HTML wrapper from an earlier block is still open. */
+function hiddenWrapped(ctx: Ctx): boolean {
+  return ctx.wrappers.length > 0;
+}
+
+/**
+ * The elements still open at the end of a raw HTML fragment, from the outermost hidden or aria-hidden one inward,
+ * or none when no hidden element is open. The parser is not ended, because ending it closes every open element and
+ * the open ones are the answer. Bounded by the nesting limit: a deeper stack stops the comparison in extractHtml.
+ */
+function openWrappers(fragment: string): Wrapper[] {
+  const stack: Wrapper[] = [];
+  const parser = new Parser({
+    onopentag(name, attribs) {
+      stack.push({ name, hidden: attribs['hidden'] !== undefined || attribs['aria-hidden'] === 'true' });
+    },
+    onclosetag() {
+      stack.pop();
+    },
+  }, { decodeEntities: true });
+  parser.write(fragment);
+  const first = stack.findIndex((w) => w.hidden);
+  return first < 0 ? [] : stack.slice(first);
+}
+
 /** Strictly normalized text of an HTML fragment as a parser sees it: text nodes only, comments and
  * machinery elements excluded. */
 function visibleText(fragment: string): string {
@@ -394,6 +448,7 @@ function visibleText(fragment: string): string {
       if (node instanceof Text) parts.push(node.data);
       else if (node instanceof Element) {
         if (MACHINERY.has(node.name.toLowerCase())) continue;
+        if (node.attribs['hidden'] !== undefined || node.attribs['aria-hidden'] === 'true') continue;
         walk(node.children);
       }
     }
@@ -452,7 +507,7 @@ export function extractMarkdown(source: string, options: MarkdownExtractOptions 
   const maxDepth = options.maxDepth ?? MAX_NESTING_DEPTH;
   const depth = treeDepth(tree);
   if (depth > maxDepth) throw new MarkdownExtractError(`Markdown nesting depth ${depth} exceeds the limit of ${maxDepth} levels; the comparison was not run.`);
-  const ctx: Ctx = { base: options.baseUrl ?? null, source: fm.text, blocks: [], notes: [], issues: [], definitions: collectDefinitions(tree), listDepth: 0, maxDepth };
+  const ctx: Ctx = { base: options.baseUrl ?? null, source: fm.text, blocks: [], notes: [], issues: [], definitions: collectDefinitions(tree), listDepth: 0, maxDepth, wrappers: [] };
   const fmExcerpt = () => excerpt(fm.body.replace(/\s+/g, ' '));
   if (mode === 'strip' && fm.skippedLines > 0) {
     ctx.notes.push(`Front matter (${fm.skippedLines} lines) was stripped as requested (--front-matter strip).`);

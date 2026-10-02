@@ -34,6 +34,15 @@ export function looseNormalize(text: string): string {
     .trim();
 }
 
+/** Code with every run of whitespace collapsed to one space, nothing else touched. Whitespace is the ASCII
+ * whitespace characters and the Unicode space separators (\p{Zs}, which includes the no-break space). There is no
+ * Unicode normalization and no removal of zero width characters. Two code blocks that are equal here differ only in whitespace or indentation;
+ * a changed soft hyphen or a composed against a decomposed letter is a change of the code (0.2.22, found by an
+ * outside review 2026-10-02). */
+export function codeWhitespaceKey(code: string): string {
+  return code.replace(/[\p{Zs}\t\r\n\f\v]+/gu, ' ').replace(/^ | $/g, '');
+}
+
 /** Code content: CRLF and CR line endings become LF and every trailing newline is removed; other whitespace is kept. */
 export function normalizeCode(code: string): string {
   return code.replace(/\r\n?/g, '\n').replace(/\n+$/, '');
