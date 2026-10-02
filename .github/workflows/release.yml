@@ -42,6 +42,18 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "tarball=$NAME-$VERSION.tgz" >> "$GITHUB_OUTPUT"
+      - name: Release notes from CHANGELOG
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .release
+          awk -v v="$VERSION" 'index($0, "## " v " ") == 1 { f = 1; next } /^## / { f = 0 } f' CHANGELOG.md > .release/notes.md
+          if ! grep -q '[^[:space:]]' .release/notes.md; then
+            echo "CHANGELOG.md has no section headed ## $VERSION, so there are no release notes" >&2
+            exit 1
+          fi
       - name: Install, check and test the tested commit
         shell: bash
         run: |
@@ -127,7 +139,8 @@ jobs:
               exit 1
             fi
           fi
-          NOTES="Published on npm as $NAME@$VERSION. Install with \`npm install -g $NAME\` or run \`npx $NAME --help\`. The attached tarball is the registry copy, verified against its integrity hash. Built from commit $RELEASE_SHA after CI passed on Node.js 22 and 24 on Windows and Ubuntu."
+          PROVENANCE="Published on npm as $NAME@$VERSION. Install with \`npm install -g $NAME\` or run \`npx $NAME --help\`. The attached tarball is the registry copy, verified against its integrity hash. Built from commit $RELEASE_SHA after CI passed on Node.js 22 and 24 on Windows and Ubuntu."
+          NOTES="$(cat .release/notes.md)"$'\n\n'"$PROVENANCE"
           gh release create "$TAG" "$ASSET" --target "$RELEASE_SHA" --title "$TAG" --notes "$NOTES"
           TAG_SHA="$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)"
           if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then

@@ -130,7 +130,17 @@ The bundled example compares matching content and exits with code 0. It removes 
 
 ## Development
 
-Run `npm run typecheck` and `npm test`. GitHub Actions tests Node.js 22 and 24 on Windows and Ubuntu. After CI passes on the main branch, the release workflow packs the tarball once, publishes it to npm when the version is not there yet, downloads the registry copy and checks its integrity hash and its content against the packed file. Only then does it create the GitHub release with that verified tarball attached. A version that exists on npm with different content stops the release. npm packs this README too, so a change to it reaches the npm page only with a new version.
+Run `npm run typecheck` and `npm test`. GitHub Actions tests Node.js 22 and 24 on Windows and Ubuntu. After CI passes on the main branch, the release workflow packs the tarball once, publishes it to npm when the version is not there yet, downloads the registry copy and checks its integrity hash and its content against the packed file. Only then does it create the GitHub release with that verified tarball attached, and the release notes are the CHANGELOG.md section of that version, so a version without one stops the release. A version that exists on npm with different content stops the release. npm packs this README too, so a change to it reaches the npm page only with a new version.
+
+## Verify a release
+
+GitHub Actions publishes every version from 0.1.2 on with npm trusted publishing, and each one carries a provenance attestation. To check one, install it in an empty directory and ask npm to verify the signatures. Replace the version with the one you want to check.
+
+```sh
+mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.23 --ignore-scripts && npm audit signatures
+```
+
+`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance. Tag `v0.2.23` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.23 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves where a release was built and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
 
 ## Security
 
