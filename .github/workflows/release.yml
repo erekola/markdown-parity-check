@@ -21,8 +21,6 @@ jobs:
       id-token: write
     env:
       RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,6 +91,8 @@ jobs:
           echo "registry sha512: $(openssl dgst -sha512 -binary ".release/asset/$TARBALL" | base64 -w0)"
       - name: Create the GitHub release with the registry-verified tarball
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           NAME: ${{ steps.meta.outputs.name }}
           VERSION: ${{ steps.meta.outputs.version }}
           TAG: ${{ steps.meta.outputs.tag }}

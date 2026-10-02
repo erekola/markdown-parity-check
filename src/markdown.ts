@@ -5,7 +5,7 @@ import { gfm } from 'micromark-extension-gfm';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import type { Nodes, Parent, PhrasingContent, Root, RootContent, Table } from 'mdast';
 import type { Block, Extraction, ExtractionIssue, Link, ListInfo } from './model.js';
-import { extractHtml, MAX_NESTING_DEPTH } from './html.js';
+import { extractHtml, HtmlDepthError, MAX_NESTING_DEPTH } from './html.js';
 import { parseDocument } from 'htmlparser2';
 import { Element, Text, type ChildNode } from 'domhandler';
 import { excerpt, extractNumbers, insideHiddenUrlPart, looseNormalize, normalizeCode, resolveHref, strictNormalize } from './normalize.js';
@@ -47,6 +47,8 @@ interface Ctx {
   definitions: Map<string, { url: string; title: string | null }>;
   /** Nesting level of the list being read, 0 at the top. */
   listDepth: number;
+  /** The caller's nesting limit, handed on to every raw HTML block (the synthetic body wrapper is not counted). */
+  maxDepth: number;
 }
 
 interface InlineRun {
@@ -346,8 +348,14 @@ function handleRawHtml(ctx: Ctx, value: string, line: number | undefined): void 
   const textOnly = visibleText(value);
   let parsed: Extraction | null = null;
   try {
-    parsed = extractHtml(`<body>${value}</body>`, { selector: 'body', baseUrl: ctx.base });
-  } catch {
+    parsed = extractHtml(`<body>${value}</body>`, { selector: 'body', baseUrl: ctx.base, maxDepth: ctx.maxDepth + 1 });
+  } catch (err) {
+    // A block nested past the caller's limit stops the comparison like the same nesting in the HTML page does
+    // (run.ts turns this into the RunError, exit 2). Any other parse failure still falls back to the warning.
+    // The wrapper body is one level the block does not have, so the limit passed above is one higher and the
+    // reported depth one lower: the block is held to the same limit, and reported in the same terms, as the
+    // same element tree on the HTML side.
+    if (err instanceof HtmlDepthError) throw new HtmlDepthError(err.depth - 1, ctx.maxDepth);
     parsed = null;
   }
   const blocks = parsed?.blocks ?? [];
@@ -444,7 +452,7 @@ export function extractMarkdown(source: string, options: MarkdownExtractOptions 
   const maxDepth = options.maxDepth ?? MAX_NESTING_DEPTH;
   const depth = treeDepth(tree);
   if (depth > maxDepth) throw new MarkdownExtractError(`Markdown nesting depth ${depth} exceeds the limit of ${maxDepth} levels; the comparison was not run.`);
-  const ctx: Ctx = { base: options.baseUrl ?? null, source: fm.text, blocks: [], notes: [], issues: [], definitions: collectDefinitions(tree), listDepth: 0 };
+  const ctx: Ctx = { base: options.baseUrl ?? null, source: fm.text, blocks: [], notes: [], issues: [], definitions: collectDefinitions(tree), listDepth: 0, maxDepth };
   const fmExcerpt = () => excerpt(fm.body.replace(/\s+/g, ' '));
   if (mode === 'strip' && fm.skippedLines > 0) {
     ctx.notes.push(`Front matter (${fm.skippedLines} lines) was stripped as requested (--front-matter strip).`);

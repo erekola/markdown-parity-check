@@ -142,21 +142,26 @@ function iframeLink(el: Element): { src: string; title: string } | null {
   return src && title ? { src, title } : null;
 }
 
-/** The hidden and aria-hidden attributes alone, without the tag, role and page chrome rules of isSkipped. */
+/** The hidden and aria-hidden attributes alone, without the tag, role and page chrome rules of isSkipped. Used
+ * where only those two attributes matter (a task checkbox, a hidden-ancestor test); code text uses isSkipped. */
 function hiddenAttr(el: Element): boolean {
   return el.attribs['hidden'] !== undefined || el.attribs['aria-hidden'] === 'true';
 }
 
 /**
- * Text of code as the page shows it: every text node with its whitespace, except under a hidden or aria-hidden
- * element. Up to 0.2.12 code used textContent, which also returns hidden descendants, so a hidden span inside a
- * code block counted as code while the same span in a paragraph did not (found by an outside review 2026-09-26).
+ * Text of code as the page shows it: every text node with its whitespace, except under an element the rest of the
+ * extraction skips (isSkipped: the tag, role and page chrome rules, hidden and aria-hidden). Up to 0.2.12 code
+ * used textContent, which also returns hidden descendants, so a hidden span inside a code block counted as code
+ * while the same span in a paragraph did not (found by an outside review 2026-09-26). Up to 0.2.20 only hidden
+ * and aria-hidden were applied here, so the text of a button, template or nav inside a pre was still code while
+ * the same element in a paragraph was left out (found by an outside review 2026-10-02).
  */
-function visibleCode(nodes: ChildNode[]): string {
+function visibleCode(nodes: ChildNode[], profile: 'generic' | 'starlight' = 'generic'): string {
   let out = '';
   for (const node of nodes) {
     if (node instanceof Text) out += node.data;
-    else if (node instanceof Element && !hiddenAttr(node)) out += visibleCode(node.children);
+    // The root argument only matters for header and footer directly under body, which cannot occur inside a pre.
+    else if (node instanceof Element && !isSkipped(node, node, profile)) out += visibleCode(node.children, profile);
   }
   return out;
 }
@@ -293,7 +298,7 @@ function handleBlock(ctx: Ctx, el: Element): void {
     return;
   }
   if (el.name === 'pre') {
-    const code = normalizeCode(ctx.profile === 'starlight' ? starlightCode(el) : visibleCode(el.children));
+    const code = normalizeCode(ctx.profile === 'starlight' ? starlightCode(el) : visibleCode(el.children, ctx.profile));
     if (code.trim() !== '') pushBlock(ctx, { type: 'code', text: strictNormalize(code), code, links: [] }, el, el);
     return;
   }
@@ -424,19 +429,21 @@ function handleListItem(ctx: Ctx, li: Element): void {
   flushRun(ctx, run, li, ownFlushed ? 'paragraph' : 'listItem', info);
 }
 
-/** Read only recognized direct line wrappers; never discard extra non-whitespace code children. */
+/** Read only recognized direct line wrappers; a shape that is not recognized falls back to visibleCode over all
+ * children, so extra non-whitespace code children are never discarded by the shape test. Elements isSkipped
+ * excludes are left out in every path, as in the generic profile. */
 function starlightCode(pre: Element): string {
-  if (!ancestor(pre, (node) => hasClass(node, 'expressive-code'))) return visibleCode(pre.children);
+  if (!ancestor(pre, (node) => hasClass(node, 'expressive-code'))) return visibleCode(pre.children, 'starlight');
   const meaningful = pre.children.filter((node) => !(node instanceof Text && !node.data.trim()));
   const code = meaningful.length === 1 ? meaningful[0] : null;
-  if (!(code instanceof Element) || code.name !== 'code') return visibleCode(pre.children);
+  if (!(code instanceof Element) || code.name !== 'code') return visibleCode(pre.children, 'starlight');
   // The specialized shape below reads code.children directly and never passes through visibleCode, so a
   // hidden or aria-hidden <code> wrapper (the whole block, not one .ec-line inside it) was never checked and
   // its lines were exported as if visible (found by an outside review 2026-09-28). A hidden wrapper has no
   // visible code at all, the same outcome visibleCode itself gives a hidden element anywhere else.
-  if (hiddenAttr(code)) return '';
+  if (isSkipped(code, code, 'starlight')) return '';
   const lines = code.children.filter((node) => !(node instanceof Text && !node.data.trim()));
-  if (lines.length === 0 || !lines.every((node) => node instanceof Element && node.name === 'div' && hasClass(node, 'ec-line'))) return visibleCode(pre.children);
+  if (lines.length === 0 || !lines.every((node) => node instanceof Element && node.name === 'div' && hasClass(node, 'ec-line'))) return visibleCode(pre.children, 'starlight');
   // A gutter (line numbers from a plugin) sits beside the code as a direct child of the line; it is not code text.
   const gutter = (node: ChildNode) => node instanceof Element && node.name === 'div' && hasClass(node, 'gutter');
   // starlight-llms-txt prefixes + or - to ins and del lines when the block has a language other than diff. The page
@@ -446,7 +453,7 @@ function starlightCode(pre: Element): string {
     && lines.some((line) => line instanceof Element && (hasClass(line, 'ins') || hasClass(line, 'del')));
   // A line hidden with the hidden attribute is not exported either: up to 0.2.15 every .ec-line reached the text
   // regardless of visibility (0.2.16, found by an outside review 2026-09-28).
-  const visibleLines = lines.filter((line) => !(line instanceof Element && hiddenAttr(line)));
+  const visibleLines = lines.filter((line) => !(line instanceof Element && isSkipped(line, line, 'starlight')));
   return visibleLines.map((line) => starlightLineText((line as Element).children.filter((node) => !gutter(node)), line as Element, diffMarkers)).join('\n');
 }
 
@@ -454,14 +461,14 @@ function starlightCode(pre: Element): string {
  * span that is not an indent span; a line whose first such span does not start with text gets no marker. */
 function starlightLineText(children: ChildNode[], line: Element, diffMarkers: boolean): string {
   const inserted = hasClass(line, 'ins');
-  if (!diffMarkers || !(inserted || hasClass(line, 'del'))) return visibleCode(children);
+  if (!diffMarkers || !(inserted || hasClass(line, 'del'))) return visibleCode(children, 'starlight');
   const target = firstNonIndentSpan(children)?.children[0];
-  if (!(target instanceof Text)) return visibleCode(children);
+  if (!(target instanceof Text)) return visibleCode(children, 'starlight');
   let out = '';
   const collect = (nodes: ChildNode[]): void => {
     for (const node of nodes) {
       if (node instanceof Text) out += (node === target ? (inserted ? '+' : '-') : '') + node.data;
-      else if (node instanceof Element && !hiddenAttr(node)) collect(node.children);
+      else if (node instanceof Element && !isSkipped(node, node, 'starlight')) collect(node.children);
     }
   };
   collect(children);
@@ -660,6 +667,14 @@ function pickRoot(doc: Document, selector: string | undefined, notes: string[], 
   throw new HtmlExtractError('Document has no <body> element.');
 }
 
+/** The nesting limit was exceeded. A subclass so a caller that otherwise tolerates a parse failure (raw HTML
+ * inside Markdown) can tell a limit from any other failure and let the limit through. */
+export class HtmlDepthError extends HtmlExtractError {
+  constructor(readonly depth: number, readonly limit: number) {
+    super(`HTML nesting depth ${depth} exceeds the limit of ${limit} levels; the comparison was not run.`);
+  }
+}
+
 export function extractHtml(source: string, options: HtmlExtractOptions = {}): Extraction {
   const profile = options.profile ?? 'generic';
   if (profile !== 'generic' && profile !== 'starlight') throw new HtmlExtractError('Unknown HTML profile.');
@@ -667,7 +682,7 @@ export function extractHtml(source: string, options: HtmlExtractOptions = {}): E
   // Before any selector runs: the selector engine and the extraction below both recurse over the tree.
   const maxDepth = options.maxDepth ?? MAX_NESTING_DEPTH;
   const depth = nestingDepth(doc);
-  if (depth > maxDepth) throw new HtmlExtractError(`HTML nesting depth ${depth} exceeds the limit of ${maxDepth} levels; the comparison was not run.`);
+  if (depth > maxDepth) throw new HtmlDepthError(depth, maxDepth);
   const notes: string[] = [];
   const issues: ExtractionIssue[] = [];
   const baseEl = selectOne('base[href]', doc.children) as AnyNode | null;
