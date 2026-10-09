@@ -2,6 +2,13 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.26 (2026-10-09)
+
+The tool compares and reports exactly what it did before. This release updates two locked dependencies.
+
+- mdast-util-from-markdown 2.0.3 to 2.1.0, a runtime dependency, lockfile only.
+- @types/node 22.20.4 to 22.20.5, a development dependency, lockfile only.
+
 ## 0.2.25 (2026-10-03)
 
 The tool compares and reports exactly what it did before. This release changes one test only.
