@@ -2,6 +2,12 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.27 (2026-10-17)
+
+The tool compares and reports exactly what it did before. This release updates one pinned workflow action.
+
+- actions/setup-node 7.0.0 to 7.1.0 in the CI and release workflows, pinned by commit SHA.
+
 ## 0.2.26 (2026-10-09)
 
 The tool compares and reports exactly what it did before. This release updates two locked dependencies.
