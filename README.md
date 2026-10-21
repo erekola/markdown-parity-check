@@ -1,18 +1,31 @@
 # markdown-parity-check
 
-Compare the main content of a page's HTML and Markdown versions. The report lists missing, added and changed blocks, numbers and links, each with its source location. It can request both versions of one URL or read two local files.
+A command-line tool and TypeScript library that compares the main content of a page's HTML and Markdown versions. The report lists blocks that are missing, added or changed, and numbers and links that differ, each with its source location. It can request both versions of one URL or read two local files.
 
-## Try it in the browser
+## Install
 
-The [hosted Markdown parity check](https://turva.dev/markdown-parity-check) runs this comparison on turva.dev. It currently checks the published pages of turva.dev only, and the page states that limit in its opening paragraph and again at the address field. An address on any other site is refused with a message that points to the command-line tool below. Fill in an example puts turva.dev's own tools page in the address field, and Check runs the comparison as a separate step.
+The package needs **Node.js 22 or newer**. It is MIT licensed. GitHub Actions tests Node.js 22 and 24 on Windows and Ubuntu.
 
-## Check your own site
-
-Use Node.js 22 or newer. CI tests Node.js 22 and 24 on Windows and Ubuntu. `npx` runs the published package without a global install:
+Run it without installing anything:
 
 ```sh
 npx --yes markdown-parity-check --url https://example.com/page
 ```
+
+Install the CLI globally, or add it to a project as a library:
+
+```sh
+npm install -g markdown-parity-check
+npm install markdown-parity-check
+```
+
+## Try it in the browser
+
+The [hosted Markdown parity check](https://turva.dev/markdown-parity-check) runs this comparison on turva.dev. It currently checks published turva.dev pages only, except the two tool pages, and the page states that limit in its first two paragraphs and again at the address field. An address on any other site is refused with a message that points to the command-line tool.
+
+The Fill in an example button puts turva.dev's own tools page in the address field, and the Check button runs the comparison as a separate step.
+
+## Check your own site
 
 Replace the address with your page. The tool requests it twice, with `Accept: text/html` and with `Accept: text/markdown`. If the Markdown has its own address, add `--markdown-url`:
 
@@ -32,7 +45,7 @@ To compare two local files, pass both and a base URL for their relative links:
 npx --yes markdown-parity-check --html-file page.html --markdown-file page.md --base-url https://example.com/page
 ```
 
-## Exit codes
+### Exit codes
 
 | Code | Meaning |
 | --- | --- |
@@ -42,7 +55,7 @@ npx --yes markdown-parity-check --html-file page.html --markdown-file page.md --
 
 Exit code 0 means the implemented checks found nothing to reject. It does not prove that the two versions mean the same thing.
 
-## Options
+### Options
 
 | Option | Purpose |
 | --- | --- |
@@ -58,19 +71,73 @@ Exit code 0 means the implemented checks found nothing to reject. It does not pr
 | `--strict` | Treat warnings as rejecting findings. |
 | `--timeout-ms MS` | Deadline per request. The default is 15 000 ms. The value must be a positive decimal integer no greater than 2147483647. |
 | `--max-bytes N` | Limit on decoded bytes per response. The default is 5 MiB. The value must be a positive decimal integer no greater than 9007199254740991. |
-| `--help`, `--version` | Print the help or the version. |
+| `--help`, `-h` | Print the help. |
+| `--version`, `-V` | Print the version. |
 
 A value that is outside these ranges, or that is not a plain run of digits, stops the run with exit code 2 and an error message.
 
+### Example output
+
+This is the text report for the matching fixture pair in this repository, run with version 0.2.28 on 2026-10-21. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
+
+```text
+markdown-parity-check 0.2.28 (offline mode)
+Result: PASS (0 error(s), 0 warning(s), 1 info)
+
+HTML:     test/fixtures/same/page.html (file, 1,017 bytes, base https://example.com/page)
+Markdown: test/fixtures/same/page.md (file, 514 bytes, base https://example.com/page)
+Extraction: HTML via main (high confidence), 9 block(s); Markdown 9 block(s).
+  note: Front matter (3 lines) was stripped as requested (--front-matter strip).
+Coverage: 9/9 HTML block(s) aligned (100 %), 9/9 Markdown block(s) aligned (100 %).
+
+Findings (1):
+  1. [info] MARKDOWN_FRONT_MATTER_STRIPPED: Lines 1-3 were stripped as front matter (--front-matter strip) and not compared.
+       Markdown  line 1  "title: Agent readiness audit"
+```
+
 ## What is compared
 
-Without `--selector`, the HTML content comes from the first visible `main`, `article` or `[role=main]`. A candidate is visible when neither it nor an ancestor is hidden, in a template or inside one of the left-out subtrees listed below, so an `article` inside a `nav` is not used. A `form` is the one exception, so a `main` inside a `form` that has no left-out role is still used, however far up the form sits. If none of them exists, the page body is used and the report warns that page chrome may leak in. Two visible elements of the same kind that do not contain one another also give a warning, because only the first is compared. Front matter is kept by default and compared as content. If the HTML does not carry the same text, that alone fails the comparison. The tool also warns when the Markdown starts with a block that looks like YAML front matter, and `--front-matter strip` removes it.
+### The HTML container
 
-Headings, paragraphs, list items, tables, code blocks and links are compared block by block. Content marked `hidden` or `aria-hidden` is left out on both sides, also when a raw HTML wrapper such as `<div hidden>` is opened in one Markdown block and closed in a later one, and a table caption counts as a paragraph before the table. Missing and added blocks are errors. A change in text or numbers is an error too, as is a changed table or link, and a list item that shows another number or a different checked or unchecked state. A checkbox that is present on one side only is a warning, and so is a difference in order, which is also reported for a block that moved and was edited slightly, and a difference in heading level, case, punctuation, list kind or nesting level. Footnotes in the Markdown are not compared. Each one is reported as a warning, and repeated blocks are reported too. The cell-by-cell comparison of a table is skipped when one of its cells has a rowspan or colspan above 1, a rowspan of 0, or a value that is empty or does not begin with a number. The number is read from the value's leading digits, so `2abc` counts as 2. A colspan of 0 and a rowspan or colspan of 1 do not trigger it. The links and the caption of such a table are still compared. The numbering of a reversed list is not compared either. Each skip is reported as an information finding, which does not fail a check, not even with `--strict`.
+Without `--selector`, the tool looks for a visible `main`, then a visible `article`, then a visible `[role=main]`, and uses the first match of the first kind that has one.
 
-Some content is left out even when it sits inside the main content, in code blocks too: the subtrees of `form`, `button`, `input`, `select`, `textarea`, `dialog`, `iframe`, `svg`, `canvas`, `object`, `embed` and `map`, of `nav`, `script`, `style`, `noscript` and `template`, and of any element with the role `navigation`, `banner`, `contentinfo`, `complementary`, `search`, `menu`, `menubar` or `dialog`. The `starlight` profile keeps an iframe that has a source and a title, as a link. The same list applies to inline raw HTML in the Markdown and to the checkbox of a task list item, which must belong to the item itself. A left-out tag in a Markdown paragraph, such as a `<button>` or a `<script>`, is skipped through its matching closing tag in the same paragraph, and one with no closing tag is reported as a warning and its text is compared as visible. Only a self-closing `<svg/>` counts as closed by itself, as in HTML. A `<br>` in a code block is a line break. A code block that differs only in whitespace is a warning, where whitespace means the ASCII whitespace characters and the Unicode space separators such as the no-break space. Any other difference in code, an invisible character such as a soft hyphen included, is an error. An image is compared by its alt text only, not by its address, so two different images with the same alt text compare equal.
+- A candidate is visible when neither it nor an ancestor is hidden, in a template or inside one of the left-out subtrees listed below, so an `article` inside a `nav` is not used.
+- A `form` is the one exception, so a `main` inside a `form` that has no left-out role is still used, however far up the form sits.
+- If none of them exists, the page body is used and the report warns that page chrome may leak in.
+- Two visible elements of the same kind that do not contain one another also give a warning, because only the first is compared.
 
-In URL mode the Markdown response is checked first. An HTTP error or an HTML page in place of Markdown fails the check, and nothing is compared.
+Front matter is kept by default and compared as content. If the HTML does not carry the same text, that alone fails the comparison. The tool also warns when the Markdown starts with a block that looks like YAML front matter, and `--front-matter strip` removes it.
+
+### Blocks and severities
+
+Headings, paragraphs, list items, tables, code blocks and links are compared block by block. Content marked `hidden` or `aria-hidden="true"` is left out on both sides, also when a raw HTML wrapper such as `<div hidden>` is opened in one Markdown block and closed in a later one. A table caption counts as a paragraph before the table.
+
+- Errors: missing and added blocks, a change in text or numbers, a changed table or link, and a list item that shows another number or a different checked or unchecked state.
+- Warnings: a checkbox that is present on one side only, a difference in order, which is also reported for a block that moved and changed only in case, punctuation or typographic characters, and a difference in heading level, case, punctuation, list kind or nesting level. Each footnote in the Markdown is a warning, because footnotes are not compared. These are the main cases, and the `code` of each finding names the exact rule. A missing or extra copy of a repeated block is reported as a missing or added block, which is an error.
+- Information: each skipped comparison, which does not fail a check, not even with `--strict`.
+
+The cell-by-cell comparison of a table is skipped when one of its cells has a rowspan or colspan above 1, a rowspan of 0, or a value that is empty or does not begin with a number. The number is read from the value's leading digits, so `2abc` counts as 2. A colspan of 0 and a rowspan or colspan of 1 do not trigger it. The links and the caption of such a table are still compared. The numbering of a reversed list is not compared either.
+
+### Content that is left out
+
+Some content is left out even when it sits inside the main content, in code blocks too. These are the subtrees of:
+
+- `form`, `button`, `input`, `select`, `textarea`, `dialog`, `iframe`, `svg`, `canvas`, `object`, `embed` and `map`.
+- `nav`, `script`, `style`, `noscript` and `template`.
+- Any element with the role `navigation`, `banner`, `contentinfo`, `complementary`, `search`, `menu`, `menubar` or `dialog`.
+- A `header` or `footer` that sits directly under `body` or `html`, unless it is the content container itself.
+
+The `starlight` profile keeps an iframe that has a source and a title, as a link. The same list applies to inline raw HTML in the Markdown and to the checkbox of a task list item, which must belong to the item itself.
+
+A left-out tag in a Markdown paragraph, such as a `<button>` or a `<script>`, is skipped through its matching closing tag in the same paragraph. One with no closing tag is reported as a warning and its text is compared as visible. The void tags `input` and `embed` need no closing tag and are skipped on their own. A self-closing `<svg/>` counts as closed by itself, as in HTML, and `<button/>` does not.
+
+A `<br>` in a code block is a line break. A code block that differs only in whitespace is a warning, where whitespace means the ASCII whitespace characters and the Unicode space separators such as the no-break space. Any other difference in code, an invisible character such as a soft hyphen included, is an error. An image is compared by its alt text only, not by its address, so two different images with the same alt text compare equal.
+
+### Delivery in URL mode
+
+In URL mode the Markdown response is checked first. An HTTP error or an HTML page in place of Markdown fails the check, and nothing is compared. A Markdown response labelled `text/plain` is a warning, and any other content type than `text/markdown` or `text/x-markdown` is an error. If the HTML request itself returns an HTTP error, the run ends with exit code 2.
+
+### Limits of the method
 
 JavaScript is not executed. Content that a page builds in the browser is compared as the server sent it. Block matching is heuristic, so some layouts need an explicit selector. Reports mask URL query values and fragments and remove any user name or password from a URL. Excerpts may still contain private page content. Review a report before you share it.
 
@@ -80,7 +147,7 @@ Both use the comparison core of this package. They differ in which pages they re
 
 | Topic | Command-line tool | Hosted page |
 | --- | --- | --- |
-| Pages | Any public HTTP or HTTPS address, or two local files. | Published turva.dev pages only. |
+| Pages | Any public HTTP or HTTPS address, or two local files. | Published turva.dev pages only, except the two tool pages, this one and the llms.txt validator. |
 | Fetching | Network requests from your machine. Non-public addresses are refused, also behind DNS and redirects. | The turva.dev Worker renders both versions itself, so a check sends no request over the network. |
 | Response size | 5 MiB per response by default, adjustable with `--max-bytes`. | HTML up to 512 KiB. Markdown up to 128 KiB. |
 | Comparison size | Up to 4 000 000 block pairs. | Up to 250 000 block pairs. |
@@ -88,35 +155,72 @@ Both use the comparison core of this package. They differ in which pages they re
 
 The hosted page also answers a JSON POST, described on the page. It runs the release of this package pinned in [turva-worker](https://github.com/erekola/turva-worker), which can be older than the latest npm release. The report's `toolVersion` field shows which release produced it.
 
-Some limits are not in the table. A URL that contains a user name or password is refused even when its host is public, and the same holds for a redirect target. The tool sends `Accept-Encoding: gzip, deflate, br` and decodes responses with no Content-Encoding, `identity`, `gzip`, `x-gzip`, `deflate` or `br`. A response with any other Content-Encoding, `zstd` for example, is rejected, and the run ends with exit code 2. The command-line tool follows at most 5 redirects. When elements are nested more than 1024 levels deep, in the HTML page or in a raw HTML block written inside the Markdown, the extraction stops with exit code 2. The matching stops the same way when more than 1 000 000 similar block pairs would have to be considered, and the library `limits` default to the same two values.
+Some limits are not in the table:
 
-A hosted check can fail on turva.dev's own pages as well. On 2026-09-11 the check of https://turva.dev/tools returned `fail` with five errors. The Markdown carries a Related heading and four links that the HTML page does not repeat as a list, and the report listed each of them. The same four targets are links inside that page's tool cards, so the report found a missing structure and not missing content. [HTML and Markdown can disagree](https://turva.dev/blog/html-and-markdown-can-disagree) reads that result in full.
+- A URL that contains a user name or password is refused even when its host is public, and the same holds for a redirect target.
+- The tool sends `Accept-Encoding: gzip, deflate, br` and decodes responses with no Content-Encoding, `identity`, `gzip`, `x-gzip`, `deflate` or `br`. A response with any other Content-Encoding, `zstd` for example, is rejected, and the run ends with exit code 2.
+- The command-line tool follows at most 5 redirects.
+- When elements are nested more than 1024 levels deep, in the HTML page, in a raw HTML block written inside the Markdown or in the Markdown's own structure, the extraction stops with exit code 2.
+- The matching stops the same way when more than 1 000 000 similar block pairs would have to be considered. The library `limits` default to the same two values.
+- The hosted page uses lower nesting and matching limits: 512 levels and 50 000 similar block pairs.
 
-## Library use
+A hosted check can fail on turva.dev's own pages as well. On 2026-09-11 the check of https://turva.dev/tools returned `fail` with five errors. The Markdown carries a Related heading and four links that the HTML page leaves out, and the report listed each of them. The same four targets are links inside that page's tool cards, so the report found a missing structure and not missing content. The page passed again on 2026-10-02. [HTML and Markdown can disagree](https://turva.dev/blog/html-and-markdown-can-disagree) reads that result in full.
 
-The package also exports the comparison without the command-line interface, the file reader or the network code. The library entry imports no Node.js built-in modules, which is how the hosted page bundles it into a Cloudflare Worker.
+## Use from Node and TypeScript
 
-```js
+The package is an ES module written in TypeScript and ships its type declarations. The library entry exports the comparison without the command-line interface, the file reader or the network code. It imports no Node.js built-in modules, which is how the hosted page bundles it into a Cloudflare Worker.
+
+```ts
 import { run, renderJson } from 'markdown-parity-check';
+import type { Report, SourceInput } from 'markdown-parity-check';
 
 // htmlText and markdownText are the two documents you already fetched or read.
+declare const htmlText: string;
+declare const markdownText: string;
+
 const base = 'https://example.com/page';
-const source = (file, body) => ({
+const source = (file: string, body: string): SourceInput => ({
   meta: { kind: 'file', file, bytes: new TextEncoder().encode(body).length, baseUrl: base },
   body,
   base,
 });
 
-const report = run(source('page.html', htmlText), source('page.md', markdownText), { strict: false, mode: 'offline' });
+const report: Report = run(source('page.html', htmlText), source('page.md', markdownText), {
+  strict: false,
+  mode: 'offline',
+});
 console.log(report.summary.result, report.summary.exitCode);
 console.log(renderJson(report));
 ```
 
-`run(html, markdown, options)` returns the report object that `--format json` prints. A completed run has the result `pass` with exit code 0 or `fail` with exit code 1. When the comparison cannot finish, for example because the content is empty or a limit is exceeded, `run` throws a `RunError`. `errorReport` builds the error report the command prints in that case.
+`run(html, markdown, options)` returns the `Report` object. `renderJson(report)` prints it the way `--format json` does, with URL query values, fragments and credentials masked. The object `run` returns is not masked. A completed run has the result `pass` with exit code 0 or `fail` with exit code 1. When the comparison cannot finish, for example because the content is empty or a limit is exceeded, `run` throws a `RunError`. `errorReport` builds the error report the command prints in that case.
 
-The options are `selector`, `frontMatter`, `htmlProfile` (`generic` or `starlight`, see docs/starlight.md), `strict` and `mode`. The report records `mode` as `url` or `offline`, and it does not switch any check on or off. When the Markdown source has `kind: 'url'` in its `meta`, the delivery check runs first and reads the HTTP `status` and `contentType` from that `meta`. A host with a smaller CPU or memory budget can pass lower `limits`: `maxAlignmentPairs`, `maxSimilarityCandidates`, `maxSimilarityWork` and `maxNestingDepth`. The nesting limit also applies to raw HTML blocks inside the Markdown. The caller fetches the pages and decides which addresses are allowed. The address policy the command applies is exported as `assertPublicHost` and `isPublicAddress`.
+The options type is `RunOptions`. It takes `selector`, `frontMatter`, `strict`, `mode` and `htmlProfile`, which is `generic` or `starlight`. The Starlight rules are described in [docs/starlight.md](https://github.com/erekola/markdown-parity-check/blob/main/docs/starlight.md). The report records `mode` as `url` or `offline`, and it does not switch any check on or off.
 
-## Run from source
+When the Markdown source has `kind: 'url'` in its `meta`, the delivery check runs first and reads the HTTP `status` and `contentType` from that `meta`.
+
+A host with a smaller CPU or memory budget can pass lower `limits`, typed as `RunLimits`: `maxAlignmentPairs`, `maxSimilarityCandidates`, `maxSimilarityWork` and `maxNestingDepth`. The nesting limit also applies to raw HTML blocks inside the Markdown.
+
+The caller fetches the pages and decides which addresses are allowed. The address policy the command applies is exported as `assertPublicHost` and `isPublicAddress`.
+
+### Report format
+
+The JSON report is the `Report` type. Its main fields are:
+
+| Field | Content |
+| --- | --- |
+| `schemaVersion` | The number `1`. |
+| `toolVersion` | The release that produced the report. |
+| `mode` | `url` or `offline`. |
+| `sources` | The metadata of the HTML and the Markdown input. |
+| `extraction` | How each side was extracted. It is `null` in an error report and in a result that failed at the delivery check, because no extraction result is reported then. |
+| `summary` | `result`, which is `pass`, `fail` or `error`, then `strict`, the counts `errors`, `warnings` and `infos`, `coverage`, which is `null` when nothing was compared, `exitCode` and, when `result` is `error`, `error` and sometimes `errorValue`. |
+| `findings` | A list of `Finding` objects, each with `code`, `severity`, `direction` and `message`, and where they apply the `html` and `markdown` locations and the `before` and `after` text. |
+| `limitations` | The fixed list of what the check does not cover. |
+
+## Development
+
+The sources are TypeScript under `src/`, compiled with `tsc` to `dist/`. Clone the repository, build it and run the bundled example:
 
 ```sh
 git clone https://github.com/erekola/markdown-parity-check.git
@@ -126,21 +230,25 @@ npm run build
 node dist/src/cli.js --html-file test/fixtures/same/page.html --markdown-file test/fixtures/same/page.md --base-url https://example.com/page --front-matter strip
 ```
 
-The bundled example compares matching content and exits with code 0. It removes the Markdown file's front matter explicitly. Without `--front-matter strip` the same pair fails, because the front matter is compared as content.
+The example compares matching content and exits with code 0. It removes the Markdown file's front matter explicitly. Without `--front-matter strip` the same pair fails, because the front matter is compared as content.
 
-## Development
+`npm run typecheck` runs `tsc --noEmit`. `npm test` builds first and then runs the tests against `dist/`.
 
-Run `npm run typecheck` and `npm test`. GitHub Actions tests Node.js 22 and 24 on Windows and Ubuntu. After CI passes on the main branch, the release workflow packs the tarball once, publishes it to npm when the version is not there yet, downloads the registry copy and checks its integrity hash and its content against the packed file. Only then does it create the GitHub release with that verified tarball attached, and the release notes are the CHANGELOG.md section of that version, so a version without one stops the release. A version that exists on npm with different content stops the release. npm packs this README too, so a change to it reaches the npm page only with a new version.
+## Release process
+
+After CI passes on the main branch, the release workflow `.github/workflows/release.yml` packs the tarball once and publishes it to npm with trusted publishing over OIDC when the version is not there yet. It then downloads the registry copy and checks its integrity hash and its content against the packed file. No npm token is stored.
+
+Only after that check does it create the GitHub release with the verified tarball attached. The release notes are the CHANGELOG.md section of that version, so a version without one stops the release. A version that exists on npm with different content stops the release too. npm packs this README as well, so a change to it reaches the npm page only with a new version.
 
 ## Verify a release
 
 GitHub Actions publishes every version from 0.1.2 on with npm trusted publishing, and each one carries a provenance attestation. To check one, install it in an empty directory and ask npm to verify the signatures. Replace the version with the one you want to check.
 
 ```sh
-mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.27 --ignore-scripts && npm audit signatures
+mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.28 --ignore-scripts && npm audit signatures
 ```
 
-`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance. Tag `v0.2.27` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.27 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves where a release was built and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
+`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance. Tag `v0.2.28` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.28 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
 
 ## Security
 

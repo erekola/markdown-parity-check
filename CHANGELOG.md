@@ -2,6 +2,14 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.28 (2026-10-21)
+
+The tool compares and reports exactly what it did before. This release rewrites the README.
+
+- The library section has a TypeScript example and a table of the JSON report fields.
+- New sections cover the release process and local development, and the sample output comes from this release.
+- The Starlight profile link points to docs/starlight.md on GitHub, because docs/ is not in the npm package.
+
 ## 0.2.27 (2026-10-17)
 
 The tool compares and reports exactly what it did before. This release updates one pinned workflow action.
