@@ -6,6 +6,12 @@ on:
     branches: [main]
 permissions:
   contents: read
+# Two release runs never overlap. A run that waits is not cancelled by the one in progress, but GitHub keeps
+# one waiting run per group, so a newer run cancels an older waiting one. That older commit is then not
+# released, and the newer push releases its own commit.
+concurrency:
+  group: release
+  cancel-in-progress: false
 jobs:
   release:
     # One job on purpose: the tarball packed here is the file that is published to npm, compared with
@@ -22,6 +28,17 @@ jobs:
     env:
       RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
+      - name: Stop unless the default branch is still at the tested commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          # In a workflow_run run, GITHUB_SHA is the latest commit of the default branch and npm records it in the
+          # provenance attestation. The tested commit is RELEASE_SHA. If a later push moved the branch, the package
+          # would be built from one commit and attested for another, so the release stops here.
+          if [ "$GITHUB_SHA" != "$RELEASE_SHA" ]; then
+            echo "The default branch is at $GITHUB_SHA, not at the tested commit $RELEASE_SHA. A later push made this run stale; the release for that push runs on its own. Nothing was published." >&2
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}

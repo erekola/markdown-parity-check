@@ -48,13 +48,16 @@ export function normalizeCode(code: string): string {
   return code.replace(/\r\n?/g, '\n').replace(/\n+$/, '');
 }
 
-// Terminal control characters (ANSI escape sequences and other C0 controls) reach a text report unescaped if a
+// Terminal control characters (ANSI escape sequences, C0 and C1 controls) and the Unicode bidi controls reach a text report unescaped if a
 // compared page or an argument carries one, while --format json is already safe because JSON.stringify escapes
 // every control character. Tab, newline and carriage return are kept: they are ordinary formatting, and by the
 // time most report text reaches this point strictNormalize has already collapsed them to a single space anyway.
-const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+// C1 controls (U+0080 to U+009F) include the single-byte CSI (U+009B), which some terminals read as an escape. The bidi
+// controls (U+202A to U+202E and U+2066 to U+2069) reorder the text a reader sees, so a quoted excerpt could read
+// differently in a report than in the page. Both ranges match the hosted validator's stripControls(stripBidi()).
+const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202A-\u202E\u2066-\u2069]/g;
 
-/** Removes ANSI escape sequences and other C0 controls from a value that may come from a compared page or a raw
+/** Removes ANSI escape sequences, other C0 and C1 controls and the Unicode bidi controls from a value that may come from a compared page or a raw
  * argument, so a plain --format text report cannot replay them at the terminal (0.2.16, found by an outside
  * review 2026-09-28). */
 export function stripControlChars(text: string): string {
@@ -474,7 +477,13 @@ export function maskHref(href: string): string {
     const u = new URL(href);
     u.username = '';
     u.password = '';
-    for (const key of Array.from(u.searchParams.keys())) u.searchParams.set(key, '***');
+    // One pass (Tek-560 in the hosted validator): a Set keeps the first-seen key order and merges duplicates, and the
+    // masked query is built once with append. Calling searchParams.set for each key re-serializes the whole query
+    // every time, which is quadratic in the number of keys (5 000 keys took 2.1 s, 20 000 took 35 s). An empty
+    // query is left as it is, so "?" stays "?".
+    const maskedQuery = new URLSearchParams();
+    for (const key of new Set<string>(u.searchParams.keys())) maskedQuery.append(key, '***');
+    if (maskedQuery.toString() !== '') u.search = maskedQuery.toString();
     u.hash = '';
     return u.href;
   } catch {

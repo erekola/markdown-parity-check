@@ -141,15 +141,24 @@ export async function fetchRegistryVersion(registry: string, name: string, versi
   }
   if (res.status === 404) return null;
   if (res.status !== 200) throw new ReleaseCheckError(`Registry returned HTTP ${res.status} for ${url}; not treating this as a missing version.`, res.status);
-  let data: { dist?: RegistryVersion; version?: string };
+  let parsed: unknown;
   try {
-    data = JSON.parse(await res.text()) as { dist?: RegistryVersion; version?: string };
+    parsed = JSON.parse(await res.text());
   } catch (err) {
     throw new ReleaseCheckError(`Registry response for ${url} is not JSON: ${(err as Error).message}`);
   }
-  if (!data.dist?.tarball) throw new ReleaseCheckError(`Registry response for ${url} has no dist.tarball.`);
+  // The registry is an outside source: a null, an array or a field of the wrong type is a clear error and not a TypeError.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new ReleaseCheckError(`Registry response for ${url} is not a JSON object.`);
+  const data = parsed as { dist?: unknown; version?: unknown };
+  if (data.dist === undefined || data.dist === null) throw new ReleaseCheckError(`Registry response for ${url} has no dist.tarball.`);
+  if (typeof data.dist !== 'object' || Array.isArray(data.dist)) throw new ReleaseCheckError(`Registry response for ${url} has a dist that is not an object.`);
+  const dist = data.dist as { tarball?: unknown; integrity?: unknown; shasum?: unknown };
+  if (typeof dist.tarball !== 'string' || dist.tarball === '') throw new ReleaseCheckError(`Registry response for ${url} has no dist.tarball.`);
+  if (dist.integrity !== undefined && typeof dist.integrity !== 'string') throw new ReleaseCheckError(`Registry response for ${url} has a dist.integrity that is not a string.`);
+  if (dist.shasum !== undefined && typeof dist.shasum !== 'string') throw new ReleaseCheckError(`Registry response for ${url} has a dist.shasum that is not a string.`);
+  if (data.version !== undefined && typeof data.version !== 'string') throw new ReleaseCheckError(`Registry response for ${url} has a version that is not a string.`);
   if (data.version !== undefined && data.version !== version) throw new ReleaseCheckError(`Registry returned version ${data.version} for ${url}.`);
-  return data.dist;
+  return dist as RegistryVersion;
 }
 
 export async function downloadVerified(dist: RegistryVersion, fetchFn: FetchLike): Promise<Buffer> {

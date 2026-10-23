@@ -126,13 +126,18 @@ function decompressor(encoding: string | undefined): zlib.Gunzip | zlib.Inflate 
 
 /**
  * One wall-clock deadline for a whole fetchUrl call: DNS, connect, headers, body, decompression and every
- * redirect hop. When it fires, the active request is destroyed and the pending step rejects.
+ * redirect hop. When it fires, the active request, its response and its decompression stream are destroyed
+ * and the pending step rejects.
  */
 class Deadline {
   private timer: NodeJS.Timeout;
   private expired = false;
   private active: http.ClientRequest | null = null;
   private waiters = new Set<(err: FetchError) => void>();
+  // Teardown callbacks of the response streams of the active hop. Destroying only the request leaves the
+  // decompression stream decoding what it already received (a gzip bomb of about 64 KiB on the wire decodes to
+  // 64 MiB, a brotli one to hundreds of MiB), so the streams are destroyed as well.
+  private teardowns = new Set<() => void>();
   private readonly error: FetchError;
 
   constructor(url: string, timeoutMs: number) {
@@ -143,8 +148,23 @@ class Deadline {
   private fire(): void {
     this.expired = true;
     if (this.active) this.active.destroy(this.error);
+    for (const t of this.teardowns) t();
+    this.teardowns.clear();
     for (const w of this.waiters) w(this.error);
     this.waiters.clear();
+  }
+
+  /** Registers a callback that destroys the response streams of the active hop when the deadline fires.
+   * Returns a function that removes it again. */
+  onFire(teardown: () => void): () => void {
+    if (this.expired) {
+      teardown();
+      return () => {};
+    }
+    this.teardowns.add(teardown);
+    return () => {
+      this.teardowns.delete(teardown);
+    };
   }
 
   attach(req: http.ClientRequest): void {
@@ -228,14 +248,29 @@ function requestOnce(url: URL, address: { address: string; family: 4 | 6 }, opti
           reject(new FetchError('protocol', url.href, (err as Error).message));
           return;
         }
+        // Destroys the decompression stream and the response and detaches the pipe between them, so nothing decodes
+        // or reads on after the fetch has failed. No error is passed to destroy(), so neither stream emits one.
+        const teardown = () => {
+          if (dec) {
+            res.unpipe(dec);
+            dec.destroy();
+          }
+          res.destroy();
+        };
+        const unregister = deadline.onFire(teardown);
         if (dec) {
           stream = res.pipe(dec);
           dec.on('error', (err) => finish(new FetchError('protocol', url.href, `Decompression failed: ${err.message}`)));
+          // A response that breaks off mid-body is a network failure; without this listener the error of the
+          // source stream of a pipe is not handled by anything.
+          res.on('error', (err) => finish(new FetchError('network', url.href, err.message)));
         }
         const finish = (err: Error | null) => {
           if (done) return;
           done = true;
+          unregister();
           if (err) {
+            teardown();
             req.destroy();
             reject(err);
           } else {

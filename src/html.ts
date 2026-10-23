@@ -19,8 +19,8 @@ export interface HtmlExtractOptions {
 }
 
 export class HtmlExtractError extends Error {
-  /** The user-supplied value the message names (here, --selector), capped the way worker.js's own cut()
-   * caps a reflected value: in its own field, not only interpolated into the sentence, and bounded so an
+  /** The user-supplied value the message names (here, --selector), capped the way the hosted validator's cut()
+   * (src/worker.ts in turva-worker) caps a reflected value: in its own field, not only interpolated into the sentence, and bounded so an
    * arbitrarily long selector cannot make the error text arbitrarily long (V10-P3-01, found by an outside
    * review 2026-09-28). Report rendering still masks every string, value included, through redactText. */
   value?: string;
@@ -30,7 +30,7 @@ export class HtmlExtractError extends Error {
   }
 }
 
-/** Caps a value that a message reflects back to the caller, the same length worker.js's own cut() uses, and
+/** Caps a value that a message reflects back to the caller, the same length the hosted validator's cut() (src/worker.ts in turva-worker) uses, and
 * drops a trailing lone high surrogate a plain slice can leave behind. */
 function capValue(s: string, n = 120): string {
   const cut = s.slice(0, n);

@@ -127,6 +127,9 @@ export function isPublicIPv6(ip: string): boolean {
   if (allZeroTo(8)) return false; // ::
   if (allZeroTo(7) && g7 === 1) return false; // ::1
   if (allZeroTo(5) && g5 === 0xffff) return isPublicIPv4(v4FromGroups(g6, g7)); // ::ffff:a.b.c.d
+  // ::ffff:0:a.b.c.d is the IPv4-translated range (RFC 2765 SIIT, ::ffff:0:0:0/96); like the mapped form it carries an IPv4
+  // address in the last 32 bits, so that address decides.
+  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0xffff && g5 === 0) return isPublicIPv4(v4FromGroups(g6, g7));
   if (allZeroTo(6)) return isPublicIPv4(v4FromGroups(g6, g7)); // ::a.b.c.d (deprecated compatible)
   if (g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) return isPublicIPv4(v4FromGroups(g6, g7)); // 64:ff9b::/96 NAT64
   if (g0 === 0x64 && g1 === 0xff9b && g2 === 1) return false; // 64:ff9b:1::/48 local NAT64

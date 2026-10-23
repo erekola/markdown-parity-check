@@ -82,7 +82,7 @@ export interface Report {
     /** Present when the comparison could not be completed reliably. */
     error?: string;
     /** The specific input value error names, capped and reported in its own field rather than only inside
-     * the message sentence (V10-P3-01, the same split worker.js's own diagnostics already use). */
+     * the message sentence (V10-P3-01, the same split the hosted validator's diagnostics in src/worker.ts of turva-worker already use). */
     errorValue?: string;
   };
   findings: Finding[];

@@ -12,7 +12,7 @@ Please do not open a public issue for security reports. You can expect an initia
 
 ## Network and file access
 
-URL mode requests HTML and Markdown over HTTP or HTTPS. Non-public network targets are blocked, including targets reached through DNS and redirects. Each fetch has a deadline and a limit on decoded response bytes. The defaults are 15 seconds and 5 MiB. JavaScript from fetched pages is not executed.
+URL mode requests HTML and Markdown over HTTP or HTTPS. Non-public network targets are blocked, including targets reached through DNS and redirects. Each fetch has a deadline and a limit on decoded response bytes. The defaults are 15 seconds and 5 MiB. In the command line the same deadline also covers parsing and comparison, which run in a worker thread that is stopped when the deadline passes, and the tool then exits with code 2. The library entry point has no such deadline, so a program that compares untrusted documents with it needs a time limit of its own. JavaScript from fetched pages is not executed.
 
 The work of pairing blocks is bounded by the product of the two block counts, at most 4 000 000 block pairs. The number of similar block pairs kept for matching is bounded as well. Above either limit the tool stops with exit code 2 and an error message instead of reporting a pass for a comparison it did not complete. The pairing of links inside one block is not separately bounded by default: with the default limits it has no budget of its own, and a block with thousands of links that cannot be resolved against a base URL can take time that grows with the square of the link count. A library caller can set the maxSimilarityWork limit to stop it.
 

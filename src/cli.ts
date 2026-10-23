@@ -8,7 +8,8 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { fetchUrl, FetchError, validateUrl, type FetchOptions, type FetchResult } from './fetch.js';
 import { renderJson, renderText } from './report.js';
-import { errorReport, run, RunError, type Report, type RunOptions, type SourceInput } from './run.js';
+import { runWithDeadline } from './deadline.js';
+import { errorReport, RunError, type Report, type RunOptions, type SourceInput } from './run.js';
 import { maskUrl, redactText } from './normalize.js';
 import { TOOL_NAME, TOOL_VERSION } from './version.js';
 
@@ -36,7 +37,8 @@ Options:
                           starts with a YAML-looking fenced block; strip removes that leading block.
   --format text|json      Report format (default: text).
   --output <path>         Write the report to a file instead of stdout. Refuses to overwrite an input file.
-  --timeout-ms <n>        Per-fetch timeout in milliseconds (default: 15000).
+  --timeout-ms <n>        Timeout in milliseconds for each fetch and for the parse-and-compare step
+                          (default: 15000). When it runs out the exit code is 2.
   --max-bytes <n>         Cap on decoded response bytes per fetch (default: 5242880).
   --strict                Treat warnings as rejecting findings too.
   --help, -h              Show this help.
@@ -357,7 +359,9 @@ export async function main(argv: string[], io: CliIo = { stdout: (s) => process.
       html = readFileInput(args.htmlFile!, base);
       markdown = readFileInput(args.markdownFile!, base);
     }
-    report = run(html, markdown, options);
+    // The deadline also covers parsing and comparison, which a timer on this thread cannot interrupt, so
+    // the step runs in a worker thread that is terminated when --timeout-ms has passed (exit 2).
+    report = await runWithDeadline(html, markdown, options, args.timeoutMs);
   } catch (err) {
     let message: string;
     let value: string | undefined;
