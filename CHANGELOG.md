@@ -2,6 +2,18 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.30 (2026-11-02)
+
+This release changes which page pairs pass, in both directions. A link whose children hold a block element, such as a linked card (`<a href="..."><h2>Title</h2><p>Body</p></a>`), was read as one run of inline text, so the card's heading stopped being a heading. It is now read as the blocks it contains, and each block carries the link with that block's own text as the link text.
+
+- Fixed, a pair that failed now passes: a card whose HTML heading and paragraph sit inside a link, against Markdown that writes `## [Title](url)` and `[Body](url)`. Same content, same heading level and same target, yet the run ended with four errors. Found on real sites in 60 reviewed reports over 7 pages.
+- Fixed, a pair that passed now fails: a card whose HTML heading sits inside a link, against Markdown that writes the title as a plain linked paragraph. The HTML heading was lost, and the run ended with exit code 0 and no findings, also under `--strict`. It now reports the missing heading and the added paragraph.
+- A change inside a card is reported as that change: a changed body text, a changed link target and a changed heading level each give their own finding, where the 0.2.29 report for any card was four errors whatever had changed.
+- Unchanged: a link with inline content only, a link without `href`, and a link whose block children are all hidden are read as before. A table cell still reads a card link as the cell's text. A list item whose link holds one plain paragraph stays a list item. Any other block link inside a list item is a block child of the item, like a `div` there: its heading and paragraphs are separate blocks, and the item itself is not a list item block.
+- Measured on the 86 pages of turva.dev's sitemap, each fetched in URL mode as HTML and as its Markdown twin: 0.2.29 and 0.2.30 gave the same exit code and the same findings on every page. In both versions 84 pages pass, one fails and one could not be fetched.
+- Docs: the README says that the command-line tool connects directly to the validated address and does not use `HTTP_PROXY` or `HTTPS_PROXY`, so behind a mandatory proxy the file mode is the way. That is by design: the address is pinned after validation. The README also describes how a linked card is compared.
+- Tests: `test/review-0230.test.ts` has 17 cases, 10 of which fail on 0.2.29.
+
 ## 0.2.29 (2026-10-23)
 
 A run that finishes within its deadline compares as before, and its report differs only in the redacted text noted below. This release bounds the time of parsing and comparison in the command line and closes several smaller gaps found in an outside review.

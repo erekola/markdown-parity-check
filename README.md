@@ -78,10 +78,10 @@ A value that is outside these ranges, or that is not a plain run of digits, stop
 
 ### Example output
 
-This is the text report for the matching fixture pair in this repository, run with version 0.2.29 on 2026-10-23. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
+This is the text report for the matching fixture pair in this repository, run with version 0.2.30 on 2026-11-02. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
 
 ```text
-markdown-parity-check 0.2.29 (offline mode)
+markdown-parity-check 0.2.30 (offline mode)
 Result: PASS (0 error(s), 0 warning(s), 1 info)
 
 HTML:     test/fixtures/same/page.html (file, 1,017 bytes, base https://example.com/page)
@@ -110,7 +110,7 @@ Front matter is kept by default and compared as content. If the HTML does not ca
 
 ### Blocks and severities
 
-Headings, paragraphs, list items, tables, code blocks and links are compared block by block. Content marked `hidden` or `aria-hidden="true"` is left out on both sides, also when a raw HTML wrapper such as `<div hidden>` is opened in one Markdown block and closed in a later one. A table caption counts as a paragraph before the table.
+Headings, paragraphs, list items, tables, code blocks and links are compared block by block. A link that wraps block elements, such as a linked card with a heading and a paragraph, is compared as those blocks: each keeps its own type and heading level and carries the link, and the Markdown side is read the same way, so `## [Title](url)` is a heading with a link. In a table cell the link is read as part of the cell text. Content marked `hidden` or `aria-hidden="true"` is left out on both sides, also when a raw HTML wrapper such as `<div hidden>` is opened in one Markdown block and closed in a later one. A table caption counts as a paragraph before the table.
 
 - Errors: missing and added blocks, a change in text or numbers, a changed table or link, and a list item that shows another number or a different checked or unchecked state.
 - Warnings: a checkbox that is present on one side only, a difference in order, which is also reported for a block that moved and changed only in case, punctuation or typographic characters, and a difference in heading level, case, punctuation, list kind or nesting level. Each footnote in the Markdown is a warning, because footnotes are not compared. These are the main cases, and the `code` of each finding names the exact rule. A missing or extra copy of a repeated block is reported as a missing or added block, which is an error.
@@ -148,7 +148,7 @@ Both use the comparison core of this package. They differ in which pages they re
 | Topic | Command-line tool | Hosted page |
 | --- | --- | --- |
 | Pages | Any public HTTP or HTTPS address, or two local files. | Published turva.dev pages only, except the two tool pages, this one and the llms.txt validator. |
-| Fetching | Network requests from your machine. Non-public addresses are refused, also behind DNS and redirects. | The turva.dev Worker renders both versions itself, so a check sends no request over the network. |
+| Fetching | Network requests from your machine. Non-public addresses are refused, also behind DNS and redirects. The tool connects directly to the validated address and does not use `HTTP_PROXY` or `HTTPS_PROXY`, so behind a mandatory proxy use the file mode. | The turva.dev Worker renders both versions itself, so a check sends no request over the network. |
 | Response size | 5 MiB per response by default, adjustable with `--max-bytes`. | HTML up to 512 KiB. Markdown up to 128 KiB. |
 | Comparison size | Up to 4 000 000 block pairs. | Up to 250 000 block pairs. |
 | Rate | Not limited by the tool. | About 10 checks per minute from one IP address at each Cloudflare location. |
@@ -245,10 +245,10 @@ Only after that check does it create the GitHub release with the verified tarbal
 GitHub Actions publishes every version from 0.1.2 on with npm trusted publishing, and each one carries a provenance attestation. To check one, install it in an empty directory and ask npm to verify the signatures. Replace the version with the one you want to check.
 
 ```sh
-mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.29 --ignore-scripts && npm audit signatures
+mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.30 --ignore-scripts && npm audit signatures
 ```
 
-`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance. Tag `v0.2.29` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.29 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
+`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance. Tag `v0.2.30` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.30 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
 
 ## Security
 

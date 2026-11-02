@@ -266,8 +266,44 @@ function flushRun(ctx: Ctx, run: InlineRun, container: Element, type: 'paragraph
   pushBlock(ctx, { type, text, links: run.links, ...(type === 'listItem' && list ? { list } : {}) }, node, container);
 }
 
-function hasBlockChild(el: Element): boolean {
-  return el.children.some((c) => c instanceof Element && BLOCK_TAGS.has(c.name) && !SKIP_TAGS.has(c.name));
+/**
+ * A link whose children hold a block element, such as a linked card (<a href><h2>..</h2><p>..</p></a>). Up to 0.2.29
+ * inlineText flattened it into one run of text, so the card's heading stopped being a heading: a faithful Markdown
+ * card (## [title](url)) failed with four errors, while a Markdown copy that wrote the title as a plain linked
+ * paragraph passed, also under --strict (found on real sites, 2026-11-02). Such an anchor is now a container in the
+ * walk (walkBlockAnchor). An anchor without href, or one with inline content only, is still inline text, and so is
+ * one whose block children are all skipped.
+ */
+function isBlockAnchor(ctx: Ctx, el: Element): boolean {
+  if (el.name !== 'a' || el.attribs['href'] === undefined) return false;
+  if (isSkipped(el, ctx.root, ctx.profile)) return false;
+  return el.children.some((c) => c instanceof Element && BLOCK_TAGS.has(c.name) && !SKIP_TAGS.has(c.name) && !isSkipped(c, ctx.root, ctx.profile));
+}
+
+function hasBlockChild(ctx: Ctx, el: Element): boolean {
+  return el.children.some((c) => c instanceof Element && ((BLOCK_TAGS.has(c.name) && !SKIP_TAGS.has(c.name)) || isBlockAnchor(ctx, c)));
+}
+
+/** Walks the children of a block anchor as blocks, then records the anchor's link on every block that came out of
+ * it, with that block's own text as the link text, so a heading stays a heading of its depth and a paragraph a
+ * paragraph. Markdown reads `## [t](u)` as a heading with the link t, which this matches exactly. */
+function walkBlockAnchor(ctx: Ctx, a: Element): void {
+  const start = ctx.blocks.length;
+  walk(ctx, a);
+  const rawHref = a.attribs['href'] ?? '';
+  const resolved = resolveHref(rawHref, ctx.base);
+  for (let i = start; i < ctx.blocks.length; i++) {
+    const block = ctx.blocks[i]!;
+    block.links.unshift({ text: strictNormalize(block.text), rawHref, resolved });
+  }
+}
+
+/** In a list item, a link whose only content is one plain paragraph is the item's own text, as before: the item
+ * stays a listItem and the link text is the paragraph text. Any other block anchor is a block child of the item. */
+function isParagraphOnlyAnchor(ctx: Ctx, a: Element): boolean {
+  const meaningful = a.children.filter((c) => !(c instanceof Text && c.data.trim() === '') && !(c instanceof Element && isSkipped(c, ctx.root, ctx.profile)));
+  const only = meaningful.length === 1 ? meaningful[0] : null;
+  return only instanceof Element && only.name === 'p' && !hasBlockChild(ctx, only);
 }
 
 function walk(ctx: Ctx, el: Element): void {
@@ -275,7 +311,7 @@ function walk(ctx: Ctx, el: Element): void {
   let run = newRun();
   for (const child of el.children) {
     if (child instanceof Element && isSkipped(child, ctx.root, ctx.profile)) continue;
-    if (child instanceof Element && (BLOCK_TAGS.has(child.name) || (ctx.profile === 'starlight' && child.name === 'starlight-tabs'))) {
+    if (child instanceof Element && (BLOCK_TAGS.has(child.name) || isBlockAnchor(ctx, child) || (ctx.profile === 'starlight' && child.name === 'starlight-tabs'))) {
       flushRun(ctx, run, el);
       run = newRun();
       handleBlock(ctx, child);
@@ -287,6 +323,10 @@ function walk(ctx: Ctx, el: Element): void {
 }
 
 function handleBlock(ctx: Ctx, el: Element): void {
+  if (el.name === 'a') {
+    walkBlockAnchor(ctx, el);
+    return;
+  }
   if (ctx.profile === 'starlight' && el.name === 'starlight-tabs') {
     handleStarlightTabs(ctx, el);
     return;
@@ -300,7 +340,7 @@ function handleBlock(ctx: Ctx, el: Element): void {
     return;
   }
   if (el.name === 'p' || el.name === 'dt' || el.name === 'dd' || el.name === 'figcaption' || el.name === 'summary' || el.name === 'caption' || el.name === 'address') {
-    if (hasBlockChild(el)) {
+    if (hasBlockChild(ctx, el)) {
       walk(ctx, el);
       return;
     }
@@ -426,8 +466,9 @@ function handleListItem(ctx: Ctx, li: Element): void {
   let ownFlushed = false;
   for (const child of li.children) {
     if (child instanceof Element && isSkipped(child, ctx.root, ctx.profile)) continue;
-    if (child instanceof Element && (BLOCK_TAGS.has(child.name) || (ctx.profile === 'starlight' && child.name === 'starlight-tabs'))) {
-      if (!ownFlushed && child.name === 'p' && !hasBlockChild(child) && strictNormalize(run.text) === '') {
+    const blockAnchor = child instanceof Element && isBlockAnchor(ctx, child) && !isParagraphOnlyAnchor(ctx, child);
+    if (child instanceof Element && (BLOCK_TAGS.has(child.name) || blockAnchor || (ctx.profile === 'starlight' && child.name === 'starlight-tabs'))) {
+      if (!ownFlushed && child.name === 'p' && !hasBlockChild(ctx, child) && strictNormalize(run.text) === '') {
         for (const c of child.children) inlineText(ctx, c, run);
         if (run.firstNode === null) run.firstNode = child;
         continue;
