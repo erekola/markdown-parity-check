@@ -156,7 +156,7 @@ jobs:
               exit 1
             fi
           fi
-          PROVENANCE="Published on npm as $NAME@$VERSION. Install with \`npm install -g $NAME\` or run \`npx $NAME --help\`. The attached tarball is the registry copy, verified against its integrity hash. Built from commit $RELEASE_SHA after CI passed on Node.js 22 and 24 on Windows and Ubuntu."
+          PROVENANCE="Published on npm as $NAME@$VERSION. Install with \`npm install -g $NAME\` or run \`npx $NAME --help\`. The attached tarball is the registry copy, verified against its integrity hash. Built from commit $RELEASE_SHA after CI passed on Node.js 22, 24 and 26 on Windows and Ubuntu."
           NOTES="$(cat .release/notes.md)"$'\n\n'"$PROVENANCE"
           gh release create "$TAG" "$ASSET" --target "$RELEASE_SHA" --title "$TAG" --notes "$NOTES"
           TAG_SHA="$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)"

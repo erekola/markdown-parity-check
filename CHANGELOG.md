@@ -2,6 +2,14 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.32 (2026-11-04)
+
+The tool compares exactly as it did before, and a report now names version 0.2.32. This release adds Node.js 26 to the CI matrix.
+
+- CI: `.github/workflows/ci.yml` runs Node.js 22, 24 and 26 on Windows and Ubuntu.
+- Release notes: the provenance sentence that `.github/workflows/release.yml` writes names the same three versions.
+- README: the line about the test matrix names Node.js 26.
+
 ## 0.2.31 (2026-11-04)
 
 This release does not change which page pairs pass. It makes the check for a parenthesized user-information shape take near linear time on a Markdown file with many bare autolinks, and it corrects the wording of one warning, one note and one source comment.
