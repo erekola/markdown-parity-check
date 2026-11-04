@@ -382,6 +382,22 @@ describe('extraction edge cases', () => {
     assert.deepEqual(codes(r.findings), ['EXTRACTION_LOW_CONFIDENCE']);
     assert.equal(r.findings[0]?.severity, 'warning');
   });
+  it('the fallback warning and note do not say that a rejected main element is absent', () => {
+    const pages = [
+      '<html><body><main hidden><p>Gone</p></main><div><p>Only body</p></div></body></html>',
+      '<html><body><main role="navigation"><p>Gone</p></main><div><p>Only body</p></div></body></html>',
+      '<html><body><div><p>Only body</p></div></body></html>',
+    ];
+    for (const page of pages) {
+      const h = extractHtml(page);
+      assert.equal(h.strategy, 'body-fallback', page);
+      const warning = compare(h, extractMarkdown('Only body\n')).findings.find((f) => f.code === 'EXTRACTION_LOW_CONFIDENCE');
+      assert.match(warning?.message ?? '', /no eligible visible main-content element was found/, page);
+      assert.ok(!/element exists/.test(warning?.message ?? ''), page);
+      assert.ok(h.notes.some((n) => n.startsWith('No eligible visible main-content element was found')), page);
+      assert.ok(!h.notes.some((n) => n.startsWith('No <main>')), page);
+    }
+  });
   it('same text as paragraph and as list item is a structure warning, not missing content', () => {
     const r = compare(extractHtml('<main><p>Item</p></main>'), extractMarkdown('- Item\n'));
     assert.deepEqual(codes(r.findings), ['STRUCTURE_CHANGED']);

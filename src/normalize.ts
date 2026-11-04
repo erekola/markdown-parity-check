@@ -49,8 +49,10 @@ export function normalizeCode(code: string): string {
 }
 
 // Terminal control characters (ANSI escape sequences, C0 and C1 controls) and the Unicode bidi controls reach a text report unescaped if a
-// compared page or an argument carries one, while --format json is already safe because JSON.stringify escapes
-// every control character. Tab, newline and carriage return are kept: they are ordinary formatting, and by the
+// compared page or an argument carries one. --format json is safe only in part on its own: JSON.stringify escapes
+// the C0 controls (U+0000 to U+001F) and lone surrogates, and leaves U+007F, the C1 controls and the bidi controls
+// literal. It is safe in practice because renderJson sends every string value through redactText first, so this
+// strip covers the JSON output as well. Tab, newline and carriage return are kept: they are ordinary formatting, and by the
 // time most report text reaches this point strictNormalize has already collapsed them to a single space anyway.
 // C1 controls (U+0080 to U+009F) include the single-byte CSI (U+009B), which some terminals read as an escape. The bidi
 // controls (U+202A to U+202E and U+2066 to U+2069) reorder the text a reader sees, so a quoted excerpt could read
@@ -301,6 +303,11 @@ const HIDDEN_SCAN = 4096;
 // HIDDEN_SCAN below already makes for the same class of problem.
 const PAREN_USERINFO_START = /\b([a-z][a-z0-9+.-]{0,31}):\/\/\(/giu;
 const PAREN_USERINFO_SCAN = HIDDEN_SCAN;
+// How far past a position a match that STARTS before that position can read. The scheme is at most 32 characters
+// and "://(" is 4, so nameStart is at most 35 past that position. The ")" must be followed by ":" inside
+// the name window, so secretStart is at most nameStart + PAREN_USERINFO_SCAN, and the secret window ends at most
+// PAREN_USERINFO_SCAN after that. 36 + 2 * PAREN_USERINFO_SCAN covers all three with one character to spare.
+const PAREN_USERINFO_MATCH_SPAN = 36 + 2 * PAREN_USERINFO_SCAN;
 
 interface ParenUserinfoMatch {
   /** Start of the whole match, at the first character of the scheme name. */
@@ -358,14 +365,19 @@ export function maskParenUserinfo(text: string): string {
 }
 
 /** Whether position `at` falls inside the parenthesized name or the secret of a nextParenUserinfo match, the same
- * span maskParenUserinfo hides. The search starts and stops within the same HIDDEN_SCAN window
- * insideHiddenUrlPart itself uses, so a link deep inside a large document does not rescan the whole source. */
-function insideParenUserinfo(text: string, at: number): boolean {
+ * span maskParenUserinfo hides. Only a match that starts inside the same HIDDEN_SCAN window insideHiddenUrlPart
+ * itself uses can count. The regular expression search runs on a prefix of the text that ends
+ * PAREN_USERINFO_MATCH_SPAN characters after that window. The prefix keeps every index and is not cut on the
+ * left, so the word boundary at the start of a match sees the same character as on the whole text, and every match
+ * that starts inside the window sees the same name and secret windows. Up to 0.2.30 the search ran on the whole
+ * text and went on to its end when nothing matched, so a file with many bare autolinks took quadratic time. */
+export function insideParenUserinfo(text: string, at: number): boolean {
   const from = Math.max(0, at - HIDDEN_SCAN);
   const to = Math.min(text.length, at + HIDDEN_SCAN);
+  const haystack = text.slice(0, Math.min(text.length, to + PAREN_USERINFO_MATCH_SPAN));
   let pos = from;
   while (pos < to) {
-    const m = nextParenUserinfo(text, pos);
+    const m = nextParenUserinfo(haystack, pos);
     if (!m || m.start >= to) return false;
     const hiddenStart = m.nameStart - 1; // the "("
     if (at >= hiddenStart && at < m.secretEnd) return true;

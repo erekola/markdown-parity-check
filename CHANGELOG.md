@@ -2,6 +2,16 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.31 (2026-11-04)
+
+This release does not change which page pairs pass. It makes the check for a parenthesized user-information shape take near linear time on a Markdown file with many bare autolinks, and it corrects the wording of one warning, one note and one source comment.
+
+- Fixed, time: `insideParenUserinfo` ran its regular expression on the whole text, and a search that finds nothing goes on to the end of the text, so every bare autolink of a Markdown file rescanned the rest of the file and the time grew with the square of the size. It now searches a prefix of the text that ends a fixed span after the 4 096-character window, with the same indices, so the answers are the same. Measured on a file of bare autolinks with one `insideHiddenUrlPart` call per link, which calls `insideParenUserinfo` each time, medians of three runs for 8, 16, 32, 64, 128 and 256 KB: 11, 34, 113, 400, 1 509 and 5 910 ms in 0.2.30, and 11, 33, 79, 169, 356 and 744 ms now. The growth per doubling of the size was 3.1 to 3.9 and is now 2.1 from 64 KB on.
+- Changed, report text only: the warning `EXTRACTION_LOW_CONFIDENCE` said that the body was used "because no <main>, <article> or [role=main] element exists", and the extraction note said the same, also when such an element exists but is hidden or sits in left-out content. Both now say that no eligible visible main-content element was found. The code, the severity and the fallback to `<body>` are unchanged. A program that compares the old message text must be updated.
+- Comment: the comment in `src/normalize.ts` said that `JSON.stringify` escapes every control character. It escapes only the C0 controls and lone surrogates, and leaves U+007F, the C1 controls and the bidi controls literal. The comment now says so and names `redactText`, which strips those characters from every string before the JSON is written. No code changed.
+- Measured on the 86 pages of turva.dev's sitemap as stored HTML and Markdown pairs, on the 9 fixture pairs and on 167 synthetic Markdown files with many bare autolinks and `scheme://(name):secret@host` shapes: 0.2.30 and 0.2.31 gave the same exit code and the same findings, in both the JSON and the text report, on every pair, apart from the tool version, the timestamp and the two sentences above.
+- Tests: `test/linear.test.ts` gains five cases. One compares the cost of a call on a 64 KB and a 4 MB text, one times a file of 16 000 bare autolinks, and three compare `insideParenUserinfo` with a copy of the 0.2.30 function on hand-picked edges at the window cuts and on 1 500 generated texts. The two timing cases fail on 0.2.30. `test/compare.test.ts` gains one case for the new wording of the warning and the note.
+
 ## 0.2.30 (2026-11-02)
 
 This release changes which page pairs pass, in both directions. A link whose children hold a block element, such as a linked card (`<a href="..."><h2>Title</h2><p>Body</p></a>`), was read as one run of inline text, so the card's heading stopped being a heading. It is now read as the blocks it contains, and each block carries the link with that block's own text as the link text.

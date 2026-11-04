@@ -378,7 +378,7 @@ export function compare(html: Extraction, markdown: Extraction, options: { bothB
   const bothBases = options.bothBases ?? false;
 
   if (html.confidence === 'low') {
-    findings.push({ code: 'EXTRACTION_LOW_CONFIDENCE', severity: 'warning', direction: 'html_only', message: 'HTML main content was taken from <body> because no <main>, <article> or [role=main] element exists; page chrome may leak into the comparison. Use --selector to narrow it.' });
+    findings.push({ code: 'EXTRACTION_LOW_CONFIDENCE', severity: 'warning', direction: 'html_only', message: 'HTML main content was taken from <body> because no eligible visible main-content element was found; page chrome may leak into the comparison. Use --selector to narrow it.' });
   }
   for (const i of html.issues) findings.push({ code: i.code, severity: i.severity, direction: 'html_only', message: i.message, html: { line: i.line, excerpt: i.excerpt } });
   for (const i of markdown.issues) findings.push({ code: i.code, severity: i.severity, direction: 'markdown_only', message: i.message, markdown: { line: i.line, excerpt: i.excerpt } });

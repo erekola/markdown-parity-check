@@ -740,7 +740,7 @@ function pickRoot(doc: Document, selector: string | undefined, notes: string[], 
   }
   const body = selectOne('body', doc.children) as AnyNode | null;
   if (body instanceof Element) {
-    notes.push('No <main>, <article> or [role=main] element; fell back to <body> with lower extraction confidence.');
+    notes.push('No eligible visible main-content element was found; fell back to <body> with lower extraction confidence.');
     return { root: body, strategy: 'body-fallback', confidence: 'low' };
   }
   throw new HtmlExtractError('Document has no <body> element.');

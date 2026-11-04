@@ -11,7 +11,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { expandIPv6, isPublicIPv6 } from '../src/netguard.js';
-import { excerpt, maskHref, maskParenUserinfo, redactText, stripControlChars } from '../src/normalize.js';
+import { excerpt, insideHiddenUrlPart, insideParenUserinfo, maskHref, maskParenUserinfo, redactText, stripControlChars } from '../src/normalize.js';
 
 const OLD_URL_IN_TEXT = /(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"'()]+|www\.[^\s<>"'()]+|(?<![\w/])\/[^\s<>"'()]*[?#][^\s<>"'()]*|[^\s<>"'()]*\?[\w%.-]+=[^\s<>"'()]*|[\/\\]{2}[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*|(?:https?|ftp|wss?|file):[\/\\]*[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*)/giu;
 
@@ -162,5 +162,191 @@ describe('linear-time redaction and address parsing (0.2.2)', () => {
     assert.equal(isPublicIPv6('1'.repeat(N) + '!'), false);
     const ms = performance.now() - t0;
     assert.ok(ms < 2000, `digit run: ${ms.toFixed(0)} ms`);
+  });
+});
+
+// 0.2.31: insideParenUserinfo used to run its regular expression on the whole text, and the search goes on to the
+// end of the text when nothing matches, so every bare autolink of a long Markdown file rescanned the rest of the
+// file and the total time grew with the square of the size. It now searches a prefix of the text that ends a fixed
+// span after the window. The old functions are kept here as the reference: the new one must answer the same on
+// every input, and its cost per call must not depend on how long the text is.
+const OLD_PAREN_USERINFO_START = /\b([a-z][a-z0-9+.-]{0,31}):\/\/\(/giu;
+const OLD_SCAN = 4096;
+
+interface OldParenMatch {
+  start: number;
+  nameStart: number;
+  secretEnd: number;
+  end: number;
+}
+
+function oldNextParenUserinfo(text: string, from: number): OldParenMatch | null {
+  const re = new RegExp(OLD_PAREN_USERINFO_START.source, OLD_PAREN_USERINFO_START.flags);
+  re.lastIndex = from;
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    const nameStart = m.index + m[0].length;
+    const nameWindowEnd = Math.min(text.length, nameStart + OLD_SCAN);
+    const nameWindow = text.slice(nameStart, nameWindowEnd);
+    const close = nameWindow.indexOf(')');
+    const stop = nameWindow.search(/[\s(]/);
+    if (close < 0 || (stop >= 0 && stop < close) || nameWindow[close + 1] !== ':') {
+      re.lastIndex = nameStart;
+      continue;
+    }
+    const secretStart = nameStart + close + 2;
+    const secretWindowEnd = Math.min(text.length, secretStart + OLD_SCAN);
+    const secretWindow = text.slice(secretStart, secretWindowEnd);
+    const stopChar = secretWindow.search(/[@\s()<>"']/);
+    const atStop = stopChar >= 0 && secretWindow[stopChar] === '@';
+    const secretEnd = stopChar < 0 ? secretWindowEnd : secretStart + stopChar;
+    return { start: m.index, nameStart, secretEnd, end: atStop ? secretEnd + 1 : secretEnd };
+  }
+  return null;
+}
+
+function oldInsideParenUserinfo(text: string, at: number): boolean {
+  const from = Math.max(0, at - OLD_SCAN);
+  const to = Math.min(text.length, at + OLD_SCAN);
+  let pos = from;
+  while (pos < to) {
+    const m = oldNextParenUserinfo(text, pos);
+    if (!m || m.start >= to) return false;
+    const hiddenStart = m.nameStart - 1;
+    if (at >= hiddenStart && at < m.secretEnd) return true;
+    pos = m.end;
+  }
+  return false;
+}
+
+describe('insideParenUserinfo is linear and gives the same answers (0.2.31)', () => {
+  it('the cost of a call does not grow with the length of the text', () => {
+    // Quadratic growth over a 4x input gives only about 12x, which a noisy runner can hide, so the test compares a
+    // 64 KB text with a 4 MB one at the same fixed position: the old code scaled with the text (about 62x), the
+    // new code does not scale at all. The allowance of 8x plus 100 ms leaves room for a loaded CI runner.
+    const line = 'https://example.com/path/to/page?x=1 and some words around it\n';
+    const small = line.repeat(Math.ceil(65_536 / line.length));
+    const big = line.repeat(Math.ceil(4_194_304 / line.length));
+    const CALLS = 300;
+    const AT = 100;
+    const time = (text: string): number => {
+      insideParenUserinfo(text, AT);
+      const t0 = performance.now();
+      for (let i = 0; i < CALLS; i++) assert.equal(insideParenUserinfo(text, AT), false);
+      return performance.now() - t0;
+    };
+    const tSmall = time(small);
+    const tBig = time(big);
+    assert.ok(tBig < tSmall * 8 + 100, `${CALLS} calls took ${tSmall.toFixed(1)} ms on ${small.length} characters and ${tBig.toFixed(1)} ms on ${big.length}`);
+  });
+
+  it('a Markdown file with many bare autolinks takes near linear time', () => {
+    const line = 'https://example.com/p/';
+    const build = (n: number): string => {
+      let s = '';
+      for (let i = 0; i < n; i++) s += line + i + '\n\n';
+      return s;
+    };
+    const run = (text: string): number => {
+      const t0 = performance.now();
+      let at = 0;
+      for (let k = text.indexOf('https://', at); k >= 0; k = text.indexOf('https://', at)) {
+        insideHiddenUrlPart(text, k);
+        at = k + 8;
+      }
+      return performance.now() - t0;
+    };
+    run(build(500));
+    const tSmall = run(build(2_000));
+    const tBig = run(build(16_000));
+    // 8x the links: linear is 8x, the old quadratic code measured 57x. The allowance of 30x leaves room for a loaded
+    // runner, where the new code reached 19x under 40 busy processes. A floor of 100 ms keeps a fast machine's timer
+    // noise out of the ratio.
+    assert.ok(tBig < Math.max(tSmall, 25) * 30 + 100, `2 000 links took ${tSmall.toFixed(0)} ms, 16 000 links took ${tBig.toFixed(0)} ms`);
+  });
+
+  // Shapes placed so that the start of a match sits at, just before and just after the end of the window.
+  const pad = (n: number): string => ' .'.repeat(Math.ceil(n / 2)).slice(0, n);
+  const astral = String.fromCodePoint(0x1f600);
+  const crlf = String.fromCharCode(13, 10);
+
+  function agree(text: string, ats: number[], label: string): void {
+    for (const at of ats) {
+      if (at < 0 || at > text.length) continue;
+      assert.equal(insideParenUserinfo(text, at), oldInsideParenUserinfo(text, at), `${label}: at ${at} of ${text.length}`);
+    }
+  }
+
+  /** Positions around the window edges of a match that starts at `s`, and inside and around the match itself. */
+  function around(s: number, len: number): number[] {
+    const out: number[] = [];
+    for (const base of [s - 4096, s - 4095, s - 4094, s - 4097, s, s + 1, s + 5, s + len, s + len - 1, s + len + 1]) {
+      for (const d of [-1, 0, 1]) out.push(base + d);
+    }
+    return out;
+  }
+
+  it('gives the old answer on hand-picked edges', () => {
+    const schemes = ['https', 'a'.repeat(32), 'a'.repeat(33), 'x', 'Git+ssh.v2'];
+    const names = ['n', 'name', 'n'.repeat(4093), 'n'.repeat(4094), 'n'.repeat(4095), 'n'.repeat(4096), 'a b', 'a(b', ''];
+    const secrets = ['s', 's'.repeat(4095), 's'.repeat(4096), 's'.repeat(4097), 's'.repeat(9000)];
+    const ends = ['@host/path', ' trailing', '', '(', '"quoted"'];
+    for (const startAt of [0, 1, 3000, 4095, 4096, 8300]) {
+      for (const scheme of schemes) {
+        for (const name of names) {
+          for (const secret of secrets) {
+            for (const end of ends) {
+              if (secret.length > 5000 && name.length > 10 && end !== '@host/path') continue;
+              const shape = `${scheme}://(${name}):${secret}${end}`;
+              const text = pad(startAt) + shape + pad(300);
+              agree(text, around(startAt, shape.length), `${scheme.length}/${name.length}/${secret.length}/${JSON.stringify(end)}/${startAt}`);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('gives the old answer when a word character, a line break or a wide character sits at the cuts', () => {
+    const body = 'https://(user):secret@host/';
+    for (const before of ['x', '1', '_', '-', '.', ' ', astral, 'x' + astral, crlf]) {
+      for (const startAt of [4094, 4095, 4096, 4097, 5000]) {
+        const text = pad(startAt - before.length) + before + body + pad(9000);
+        agree(text, around(startAt, body.length), `before ${JSON.stringify(before)} at ${startAt}`);
+      }
+    }
+    for (const inner of [crlf, '\n', astral, astral + astral, 'e' + String.fromCharCode(0x301), String.fromCharCode(0xd83d)]) {
+      const names = `https://(a${inner}b):secret@host/`;
+      const secrets = `https://(ab):sec${inner}ret@host/`;
+      for (const shape of [names, secrets]) {
+        for (const startAt of [10, 4095, 4096, 4097]) {
+          const text = pad(startAt) + shape + pad(9000);
+          agree(text, around(startAt, shape.length), `${JSON.stringify(inner)} in ${JSON.stringify(shape)} at ${startAt}`);
+        }
+      }
+    }
+    // No ")" at all, several shapes in one window, and a shape whose secret never ends.
+    const noClose = pad(4000) + 'https://(never closed ' + 'a'.repeat(9000);
+    agree(noClose, around(4000, 40), 'no close');
+    const several = pad(4090) + 'a://(b):c@h https://(d):e@h ftp://(f):' + 's'.repeat(6000) + ' https://(g):h@i';
+    agree(several, around(4090, 60).concat(around(4090 + 12, 60), around(4090 + 40, 60)), 'several');
+    const endless = pad(4095) + 'https://(n):' + 's'.repeat(20_000);
+    agree(endless, around(4095, 20_000).concat([4095 + 12 + 4096, 4095 + 12 + 4097, 4095 + 12 + 8192]), 'endless secret');
+  });
+
+  it('gives the old answer on generated text', () => {
+    const next = prng(20261104);
+    const pieces = [
+      'https://(', 'http://(', 'a://(', 'x', 'xhttps://(', '(', ')', '):', ':', '@', '@h', ' ', crlf, '"', '<', '>', 'name', 'secret', '/', '.', 'z'.repeat(1500),
+      'z'.repeat(4096), 'z'.repeat(2500), astral, 'e' + String.fromCharCode(0x301), String.fromCharCode(0xd83d), '://(', 'ftp://(n):s',
+    ];
+    for (let i = 0; i < 1500; i++) {
+      const text = randomText(next, pieces, 40);
+      const ats = new Set<number>();
+      for (let j = 0; j < 6; j++) ats.add(Math.floor(next() * (text.length + 1)));
+      for (let k = text.indexOf('://('); k >= 0; k = text.indexOf('://(', k + 1)) {
+        for (const a of around(k, 8)) ats.add(a);
+      }
+      agree(text, [...ats], `generated #${i} (seed 20261104)`);
+    }
   });
 });
