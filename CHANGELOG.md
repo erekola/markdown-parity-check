@@ -2,6 +2,47 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.34 (2026-11-05)
+
+This release changes which page pairs pass, in both directions. Raw HTML in Markdown is read closer to the way the HTML side is read, and a changed symbol or combining mark is no longer treated as punctuation. The changes come from an outside read of this repository, repeated against the current code before each fix.
+
+Raw HTML in Markdown:
+
+- Open raw elements stay on one full stack. A `nav`, `form`, `role=navigation`, hidden or `aria-hidden` wrapper hides the Markdown blocks inside it, and the end tag of an ancestor closes a hidden descendant left open. A left-out wrapper that is never closed hides every block after it, the way it does in HTML, and a document left with no content ends with exit code 2.
+- A visible `<a href>` around Markdown blocks gives them its link, the way a block anchor reads on the HTML side. Over an HTML paragraph that has no link, such a raw anchor reports `LINK_ADDED`.
+- An excluded raw block such as `<nav>Copy</nav>` no longer raises `MARKDOWN_RAW_HTML_SKIPPED`. The warning stays for text that really goes unread.
+- A quoted `>` in an inline tag attribute no longer breaks the tag, so a link keeps its target and a hidden span stays hidden.
+- Raw HTML in a list item keeps the item's number and nesting level when it is what the HTML side reads as the item: inline content, a paragraph with text, a heading, a code block or a table without a caption. A raw `div`, `blockquote`, `section` or `details` as the whole item stays a plain block, as on the HTML side. A raw paragraph with no text or a raw table with a caption can still report `STRUCTURE_CHANGED`, which is a warning.
+- A Markdown document with more than 1,024 raw elements open at once now stops with exit code 2, the limit that the HTML side already had. Void elements such as `<br>` and elements that close implicitly such as `<p>` and `<li>` do not fill it.
+
+Lists, selectors and locations:
+
+- A list item that starts with a heading, code or a table now compares its number, kind and nesting.
+- `--html-profile starlight --selector starlight-tabs` reads the tabs the same way as the page walk.
+- A task checkbox with an excluded role of its own is ignored.
+- A line that ends in a lone CR counts as one line in reported locations.
+
+Comparison:
+
+- A changed combining mark or symbol is `TEXT_CHANGED`, such as `✅` against `❌` or `≤` against `≥`, also when a reader sees the same meaning, such as a dropped trademark sign. A difference of punctuation or case stays `TEXT_MINOR_CHANGED`, and so does a variation selector.
+- Number tokens read every decimal digit in Unicode, so a reversed sign on Arabic-Indic or full-width digits is `NUMBER_CHANGED`.
+- Repeated text blocks use the link target to break a tie in pairing, so a removed block is reported as removed. Pairing by text alone stays when the targets do not differ.
+- Links with the same name pair in order when one occurrence gains or loses its link. Two swapped targets and an added link report as two target changes and one addition.
+- Only U+0000 to U+0020 are trimmed from a link target. A no-break or ideographic space in a target is a difference.
+
+Fetching and the command line:
+
+- The HTML decoder follows the order of the HTML standard: byte order mark, Content-Type header, meta declaration in the first 1,024 bytes, then UTF-8. Markdown decoding is unchanged.
+- The check for HTML served as Markdown skips leading comments, processing instructions and declarations. Real Markdown that starts with a comment is unaffected.
+- A bracketed IPv6 literal goes to no DNS lookup, and the address policy runs on it before the connection.
+- A closed stdout pipe ends with exit code 2 instead of an uncaught exception.
+
+Tests and documentation:
+
+- The test for the import graph now follows runtime dependencies and has a negative control with a planted `node:fs` import.
+- New tests cover image parity for inline and reference images. Mutating the image reading now fails them.
+- The README says that a moved block with changed words or numbers receives no order finding, because the two blocks cannot be matched as the same block.
+
 ## 0.2.33 (2026-11-05)
 
 This release does not change which page pairs pass. It fixes a timeout that left a socket open after a redirect, builds the User-Agent from the tool version, makes the release check refuse a package that holds a sync conflict copy, and corrects what the documentation says about the time a comparison can take.

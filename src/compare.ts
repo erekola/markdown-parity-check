@@ -2,7 +2,7 @@
 
 import { align, resolveLimits, AlignmentLimitError, UNCERTAIN_THRESHOLD, type AlignmentLimits, type Pair } from './align.js';
 import type { Block, Extraction, Finding, FindingSide, Link } from './model.js';
-import { codeWhitespaceKey, excerpt, hrefDifference, looseNormalize, maskHref, redactText, relativeHrefRelation, visibleNumbers } from './normalize.js';
+import { codeWhitespaceKey, excerpt, hrefDifference, looseNormalize, maskHref, redactText, relativeHrefRelation, textKey, trimHref, visibleNumbers } from './normalize.js';
 
 export interface Coverage {
   htmlBlocks: number;
@@ -83,83 +83,79 @@ const linkHref = (l: Link, href: string) => (l.masked ? '***' : maskHref(href));
  * 1. Links whose text occurs equally often on both sides pair in document order: the first "download" with the
  * first "download". Up to 0.2.12 every link took any unused link with the same text and target, so two links with
  * the same text and swapped targets passed with no finding (0.2.13, found by an outside review 2026-09-26).
- * 2. Every other link takes the first unused Markdown link, in document order, that has the same text and the same
- * target, or else the first unused one with the same text. The Markdown links are indexed by text and, for a
- * resolved HTML link, by text and target; an unresolved HTML link scans the links that share its text, because
- * relativeHrefRelation compares two references and has no key of its own (0.2.12, where the old scans of the
- * whole list made one block with 20 000 links take more than a second).
+ * 2. Links whose text occurs a different number of times pair in order of occurrence too (MP-14). When the targets of
+ * the shorter side appear in the same order among the targets of the longer side, they pair with those, so a link
+ * added or removed anywhere is one addition or one missing link and nothing else. Otherwise the first links of the
+ * two sides pair by position and the surplus is missing or added, so a swap that comes with an added link is two
+ * target changes and an addition. Up to 0.2.33 each HTML link took the first Markdown link with the same text and
+ * target, which paired such a swap as no change and hid it. Every target comparison counts as work, so maxWork bounds
+ * the total the way maxSimilarityWork bounds align's own similarity search (0.2.16).
  * 3. What is still unpaired pairs by loosely normalized text, the same way as step 1 and then in order, so a link
  * whose text differs only in case or punctuation is one changed text and not a missing and an added link (0.2.13).
  * @internal Exported for test/compare-links.test.ts.
  */
 export function pairLinks(hLinks: Link[], mLinks: Link[], maxWork = Number.POSITIVE_INFINITY): { pairs: Array<[number, number]>; missing: number[]; added: number[] } {
   const used = new Array<boolean>(mLinks.length).fill(false);
-  const lists = new Map<string, number[]>();
-  const heads = new Map<string, number>();
-  const key = (...parts: string[]) => JSON.stringify(parts);
-  const add = (k: string, i: number) => {
-    const list = lists.get(k);
-    if (list) list.push(i);
-    else lists.set(k, [i]);
+  const byText = (links: Link[]) => {
+    const out = new Map<string, number[]>();
+    links.forEach((l, i) => {
+      const list = out.get(l.text);
+      if (list) list.push(i);
+      else out.set(l.text, [i]);
+    });
+    return out;
   };
-  const first = (k: string): number => {
-    const list = lists.get(k);
-    if (!list) return -1;
-    let n = heads.get(k) ?? 0;
-    while (n < list.length && used[list[n]!]) n++;
-    heads.set(k, n);
-    return n < list.length ? list[n]! : -1;
+  const hByText = byText(hLinks);
+  const mByText = byText(mLinks);
+  let work = 0;
+  const same = (hi: number, mi: number): boolean => {
+    work++;
+    if (work > maxWork) {
+      throw new AlignmentLimitError(`Comparison limit exceeded: pairing links by shared text needs more than ${maxWork} comparisons among ${hLinks.length} HTML and ${mLinks.length} Markdown links. Narrow the HTML content with --selector or compare a smaller page.`);
+    }
+    return sameTarget(hLinks[hi]!, mLinks[mi]!);
   };
-  mLinks.forEach((l, i) => {
-    add(key('text', l.text), i);
-    if (l.resolved !== null) add(key('resolved', l.text, l.resolved), i);
-    else add(key('raw-unresolved', l.text, l.rawHref.trim()), i);
-  });
-  const count = (links: Link[]) => {
-    const m = new Map<string, number>();
-    for (const l of links) m.set(l.text, (m.get(l.text) ?? 0) + 1);
-    return m;
+  /** For each index of `small`, in order, the index in `big` of the first later link with the same target; null when one has none. */
+  const inOrder = (small: number[], big: number[], match: (s: number, b: number) => boolean): number[] | null => {
+    const out: number[] = [];
+    let j = 0;
+    for (const s of small) {
+      while (j < big.length && !match(s, big[j]!)) j++;
+      if (j === big.length) return null;
+      out.push(big[j]!);
+      j++;
+    }
+    return out;
   };
-  const hCount = count(hLinks);
-  const mCount = count(mLinks);
-  const seenInH = new Map<string, number>();
+  const planned = new Array<number>(hLinks.length).fill(-1);
+  for (const [text, hIdx] of hByText) {
+    const mIdx = mByText.get(text);
+    if (!mIdx) continue;
+    if (hIdx.length === mIdx.length) {
+      hIdx.forEach((hi, k) => {
+        planned[hi] = mIdx[k]!;
+      });
+    } else if (hIdx.length < mIdx.length) {
+      const hit = inOrder(hIdx, mIdx, same);
+      hIdx.forEach((hi, k) => {
+        planned[hi] = hit ? hit[k]! : mIdx[k]!;
+      });
+    } else {
+      const hit = inOrder(mIdx, hIdx, (mi, hi) => same(hi, mi));
+      mIdx.forEach((mi, k) => {
+        planned[hit ? hit[k]! : hIdx[k]!] = mi;
+      });
+    }
+  }
   const pairs: Array<[number, number]> = [];
   let missing: number[] = [];
-  // Unresolved links with the same text and unequal counts scan the shared list below once per HTML link (step
-  // 2); work counts those scans so maxWork bounds the total the way maxSimilarityWork bounds align's own
-  // similarity search (0.2.16, found by an outside review 2026-09-28).
-  let work = 0;
-  hLinks.forEach((hl, hi) => {
-    let idx = -1;
-    const k = seenInH.get(hl.text) ?? 0;
-    seenInH.set(hl.text, k + 1);
-    if (hCount.get(hl.text) === mCount.get(hl.text)) {
-      idx = lists.get(key('text', hl.text))![k]!;
-    } else if (hl.resolved !== null) {
-      // sameTarget: a resolved Markdown link with the same resolved href, or an unresolved one with the same raw href.
-      const a = first(key('resolved', hl.text, hl.resolved));
-      const b = first(key('raw-unresolved', hl.text, hl.rawHref.trim()));
-      idx = a < 0 ? b : b < 0 ? a : Math.min(a, b);
-    } else {
-      const list = lists.get(key('text', hl.text)) ?? [];
-      for (const i of list) {
-        work++;
-        if (work > maxWork) {
-          throw new AlignmentLimitError(`Comparison limit exceeded: pairing unresolved links by shared text needs more than ${maxWork} comparisons among ${hLinks.length} HTML and ${mLinks.length} Markdown links. Narrow the HTML content with --selector or compare a smaller page.`);
-        }
-        if (!used[i] && sameTarget(hl, mLinks[i]!)) {
-          idx = i;
-          break;
-        }
-      }
-    }
-    if (idx < 0) idx = first(key('text', hl.text));
-    if (idx < 0) {
+  planned.forEach((mi, hi) => {
+    if (mi < 0) {
       missing.push(hi);
       return;
     }
-    used[idx] = true;
-    pairs.push([hi, idx]);
+    used[mi] = true;
+    pairs.push([hi, mi]);
   });
   // Step 3: the links still unpaired, by loosely normalized text.
   const looseLists = new Map<string, number[]>();
@@ -263,7 +259,7 @@ function compareLinks(out: Finding[], h: Block, m: Block, bothBases: boolean, ma
 function sameTarget(a: Link, b: Link): boolean {
   if (a.resolved !== null && b.resolved !== null) return a.resolved === b.resolved;
   if (a.resolved === null && b.resolved === null) return relativeHrefRelation(a.rawHref, b.rawHref) === 'same';
-  return a.rawHref.trim() === b.rawHref.trim();
+  return trimHref(a.rawHref) === trimHref(b.rawHref);
 }
 
 /**
@@ -357,13 +353,16 @@ function comparePair(out: Finding[], p: Pair, h: Block, m: Block, bothBases: boo
       } else {
         out.push({ code: 'NUMBER_CHANGED', severity: 'error', direction: 'both', message: `Numeric value differs in the ${label(h)} inside a masked part of a URL (a query value, the fragment or user information), so the values are not shown.`, html: side(h), markdown: side(m) });
       }
-    } else if (h.loose === m.loose) {
+    } else if (textKey(h.text) === textKey(m.text)) {
+      // The text key keeps the marks and symbols the alignment key drops (MP-11).
       out.push({ code: 'TEXT_MINOR_CHANGED', severity: 'warning', direction: 'both', message: `The ${label(h)} differs only in case, punctuation or typographic characters.`, html: side(h), markdown: side(m), before: excerpt(h.text), after: excerpt(m.text) });
     } else {
       out.push({ code: 'TEXT_CHANGED', severity: 'error', direction: 'both', message: `The ${label(h)} text differs.`, html: side(h), markdown: side(m), before: excerpt(h.text), after: excerpt(m.text) });
     }
   }
-  if (h.type === 'listItem' && m.type === 'listItem') compareListItems(out, h, m);
+  // Any block can carry the list context of its item (a heading, code or a table that leads it, MP-06); the function
+  // returns at once for a block without one.
+  compareListItems(out, h, m);
   compareLinks(out, h, m, bothBases, maxSimilarityWork);
 }
 

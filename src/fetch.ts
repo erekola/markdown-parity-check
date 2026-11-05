@@ -9,7 +9,7 @@ import dns from 'node:dns';
 import zlib from 'node:zlib';
 import type { Readable } from 'node:stream';
 import type { LookupFunction } from 'node:net';
-import { assertPublicHost, assertPublicResolved, BlockedAddressError } from './netguard.js';
+import { assertPublicHost, assertPublicResolved, BlockedAddressError, ipVersion } from './netguard.js';
 import { maskUrl, redactText } from './normalize.js';
 import { TOOL_NAME, TOOL_VERSION } from './version.js';
 
@@ -82,6 +82,15 @@ export function validateUrl(input: string): URL {
 async function pickAddress(hostname: string, options: FetchOptions): Promise<{ address: string; family: 4 | 6 }> {
   const allowed = (options.testAllowHosts ?? []).includes(hostname.toLowerCase());
   if (!allowed) assertPublicHost(hostname);
+  // A bracketed IPv6 literal is an address and not a name (MP-20): it never goes to DNS, where the brackets made the
+  // lookup a name lookup of a string that is no name. The policy runs on the literal itself before any connection.
+  if (hostname.startsWith('[') && hostname.endsWith(']')) {
+    const literal = hostname.slice(1, -1);
+    if (ipVersion(literal) === 6) {
+      if (!allowed) assertPublicResolved(hostname, literal);
+      return { address: literal, family: 6 };
+    }
+  }
   const resolver = options.resolver ?? defaultResolver;
   let answers: Array<{ address: string; family: 4 | 6 }>;
   try {
@@ -97,9 +106,53 @@ async function pickAddress(hostname: string, options: FetchOptions): Promise<{ a
   return answers[0]!;
 }
 
-function decodeBody(buf: Buffer, contentType: string | null): string {
+/** A decoder for an encoding label, or null when the runtime does not know the label. */
+function decoderFor(label: string): InstanceType<typeof TextDecoder> | null {
+  try {
+    return new TextDecoder(label, { fatal: false });
+  } catch {
+    return null;
+  }
+}
+
+function headerCharset(contentType: string | null): string | null {
   const m = /charset=([^;]+)/i.exec(contentType ?? '');
-  const charset = (m?.[1] ?? 'utf-8').trim().replace(/^"|"$/g, '').toLowerCase();
+  return m?.[1] === undefined ? null : m[1].trim().replace(/^"|"$/g, '').toLowerCase();
+}
+
+/** The encoding a HTML page declares in a meta element among its first 1024 bytes (the HTML standard's prescan). A
+ * comment is skipped, and a declared UTF-16 is read as UTF-8, because a page that can be read this far as ASCII is not
+ * UTF-16. */
+function metaCharset(buf: Buffer): string | null {
+  const head = buf.subarray(0, 1024).toString('latin1').replace(/<!--[\s\S]*?(?:-->|$)/g, '');
+  for (const tag of head.matchAll(/<meta\b[^>]*>?/gi)) {
+    const m = /charset\s*=\s*["']?\s*([^\s"'>;/]+)/i.exec(tag[0]);
+    if (!m) continue;
+    const label = m[1]!.toLowerCase();
+    if (decoderFor(label)) return label.startsWith('utf-16') ? 'utf-8' : label;
+  }
+  return null;
+}
+
+/** HTML is decoded the way the HTML standard orders the evidence: a byte order mark, then the charset of the
+ * Content-Type header, then the meta declaration, and UTF-8 when none of them names an encoding the runtime knows
+ * (MP-18). The standard's own default is windows-1252; UTF-8 is this tool's default for pages that say nothing. */
+function decodeHtml(buf: Buffer, contentType: string | null): string {
+  const bom = buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf ? 'utf-8' : buf[0] === 0xff && buf[1] === 0xfe ? 'utf-16le' : buf[0] === 0xfe && buf[1] === 0xff ? 'utf-16be' : null;
+  const fromBom = bom === null ? null : decoderFor(bom);
+  if (fromBom) return fromBom.decode(buf);
+  const header = headerCharset(contentType);
+  const fromHeader = header === null ? null : decoderFor(header);
+  if (fromHeader) return fromHeader.decode(buf);
+  const meta = metaCharset(buf);
+  const fromMeta = meta === null ? null : decoderFor(meta);
+  return (fromMeta ?? new TextDecoder('utf-8')).decode(buf);
+}
+
+function decodeBody(buf: Buffer, contentType: string | null): string {
+  const type = (contentType ?? '').split(';')[0]!.trim().toLowerCase();
+  if (type === 'text/html' || type === 'application/xhtml+xml') return decodeHtml(buf, contentType);
+  const charset = headerCharset(contentType) ?? 'utf-8';
   try {
     return new TextDecoder(charset, { fatal: false }).decode(buf);
   } catch {

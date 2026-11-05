@@ -5,7 +5,7 @@ import { gfm } from 'micromark-extension-gfm';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import type { Nodes, Parent, PhrasingContent, Root, RootContent, Table } from 'mdast';
 import type { Block, Extraction, ExtractionIssue, Link, ListInfo } from './model.js';
-import { extractHtml, HtmlDepthError, MAX_NESTING_DEPTH, opensExcludedSubtree } from './html.js';
+import { BLOCK_TAGS, extractHtml, HtmlDepthError, MAX_NESTING_DEPTH, opensExcludedSubtree } from './html.js';
 import { parseDocument, Parser } from 'htmlparser2';
 import { Element, Text, type ChildNode } from 'domhandler';
 import { excerpt, extractNumbers, insideHiddenUrlPart, looseNormalize, normalizeCode, resolveHref, strictNormalize } from './normalize.js';
@@ -49,15 +49,19 @@ interface Ctx {
   listDepth: number;
   /** The caller's nesting limit, handed on to every raw HTML block (the synthetic body wrapper is not counted). */
   maxDepth: number;
-  /** Raw HTML elements still open at the end of the last raw HTML block, from the outermost hidden one inward. A
-   * wrapper such as <div hidden> opened in one Markdown block and closed in a later one hides the blocks between
-   * (0.2.22). Empty when nothing hidden is open. */
+  /** Raw HTML elements still open at the end of the last raw HTML block, the whole stack from the outermost one. A
+   * wrapper such as <div hidden> or <nav> opened in one Markdown block and closed in a later one hides the blocks
+   * between, and a visible <a href> gives them its link. The visible ones stay in the stack because their closing
+   * tags close what is open inside them. */
   wrappers: Wrapper[];
 }
 
 interface Wrapper {
   name: string;
-  hidden: boolean;
+  /** The element hides what it holds: hidden, aria-hidden, or a subtree the HTML side leaves out (nav, form, a role). */
+  covers: boolean;
+  /** The href of a visible anchor, which the blocks inside get as their link. */
+  href?: string;
 }
 
 interface InlineRun {
@@ -82,11 +86,29 @@ function parseInlineTag(value: string): InlineTag | null {
     const m = /^<\/([A-Za-z][A-Za-z0-9-]*)\s*>$/.exec(v);
     return m ? { name: m[1]!.toLowerCase(), closing: true, attribs: {} } : null;
   }
-  if (!/^<[A-Za-z][^>]*>$/.test(v)) return null;
-  const doc = parseDocument(v, { decodeEntities: true });
-  const el = doc.children.find((c): c is Element => c instanceof Element);
-  if (!el) return null;
-  return { name: el.name.toLowerCase(), closing: false, selfClosing: /\/\s*>$/.test(v), attribs: el.attribs };
+  const tag = singleOpenTag(v);
+  if (!tag) return null;
+  return { name: tag.name.toLowerCase(), closing: false, selfClosing: /\/\s*>$/.test(v), attribs: tag.attribs };
+}
+
+/** The one opening tag a string consists of, found by the HTML tokenizer so that a quoted attribute value may hold a
+ * ">" (title="A > B"); null when the string is anything else: text after the tag, a comment, a tag still open at the
+ * end. The first version looked for the closing ">" with a pattern and cut the tag at a quoted one (MP-02). */
+function singleOpenTag(v: string): { name: string; attribs: Record<string, string> } | null {
+  if (!/^<[A-Za-z]/.test(v)) return null;
+  const seen: { tag: { name: string; attribs: Record<string, string>; end: number } | null; extra: boolean } = { tag: null, extra: false };
+  const parser: Parser = new Parser({
+    onopentag(name, attribs) {
+      if (seen.tag) seen.extra = true;
+      else seen.tag = { name, attribs, end: parser.endIndex };
+    },
+    ontext() { seen.extra = true; },
+    oncomment() { seen.extra = true; },
+    onprocessinginstruction() { seen.extra = true; },
+  }, { decodeEntities: true });
+  parser.write(v);
+  if (!seen.tag || seen.extra || seen.tag.end !== v.length - 1) return null;
+  return { name: seen.tag.name, attribs: seen.tag.attribs };
 }
 
 /**
@@ -268,10 +290,16 @@ function push(ctx: Ctx, partial: Omit<Block, 'loose' | 'numbers' | 'location'>, 
     numbers: extractNumbers(partial.text),
     location: { line, blockIndex: ctx.blocks.length },
   };
+  // A visible raw <a href> left open by an earlier raw HTML block links the blocks inside it, the way the HTML side
+  // gives every block of a block anchor the anchor's link with the block's own text; the outermost link comes first (MP-08).
+  for (let i = ctx.wrappers.length - 1; i >= 0; i--) {
+    const href = ctx.wrappers[i]!.href;
+    if (href !== undefined) block.links.unshift({ text: strictNormalize(block.text), rawHref: href, resolved: resolveHref(href, ctx.base) });
+  }
   ctx.blocks.push(block);
 }
 
-function handleTable(ctx: Ctx, table: Table): void {
+function handleTable(ctx: Ctx, table: Table, listItem?: ListInfo): void {
   const cells: string[][] = [];
   const links: Link[] = [];
   for (const row of table.children) {
@@ -286,8 +314,10 @@ function handleTable(ctx: Ctx, table: Table): void {
   }
   if (cells.length === 0) return;
   const text = cells.map((r) => r.join(' | ')).join(' \n ');
-  push(ctx, { type: 'table', text: strictNormalize(text), cells, links }, table);
+  push(ctx, { type: 'table', text: strictNormalize(text), cells, links, ...(listItem ? { list: listItem } : {}) }, table);
 }
+
+const LEADING_TYPES = new Set<string>(['paragraph', 'heading', 'code', 'table', 'html']);
 
 function handle(ctx: Ctx, node: RootContent, listItem?: ListInfo): void {
   switch (node.type) {
@@ -296,7 +326,7 @@ function handle(ctx: Ctx, node: RootContent, listItem?: ListInfo): void {
       const run: InlineRun = { text: '', links: [] };
       inlineChildren(ctx, node.children, run, node.position?.start.line);
       const text = strictNormalize(run.text);
-      if (text !== '') push(ctx, { type: 'heading', text, depth: node.depth, links: run.links }, node);
+      if (text !== '') push(ctx, { type: 'heading', text, depth: node.depth, links: run.links, ...(listItem ? { list: listItem } : {}) }, node);
       return;
     }
     case 'paragraph': {
@@ -310,11 +340,11 @@ function handle(ctx: Ctx, node: RootContent, listItem?: ListInfo): void {
     case 'code': {
       if (hiddenWrapped(ctx)) return;
       const code = normalizeCode(node.value);
-      if (code.trim() !== '') push(ctx, { type: 'code', text: strictNormalize(code), code, links: [] }, node);
+      if (code.trim() !== '') push(ctx, { type: 'code', text: strictNormalize(code), code, links: [], ...(listItem ? { list: listItem } : {}) }, node);
       return;
     }
     case 'table':
-      if (!hiddenWrapped(ctx)) handleTable(ctx, node);
+      if (!hiddenWrapped(ctx)) handleTable(ctx, node, listItem);
       return;
     case 'list': {
       // A Markdown list shows its start number and counts on; its items carry the list kind, the nesting level and
@@ -327,7 +357,9 @@ function handle(ctx: Ctx, node: RootContent, listItem?: ListInfo): void {
         ctx.listDepth++;
         let first = true;
         for (const child of item.children) {
-          handle(ctx, child, first && child.type === 'paragraph' ? info : undefined);
+          // The first child carries the item's list context whatever it is: a paragraph is the item text, a heading,
+          // code, a table or raw HTML keep their own type with the context on them (MP-05, MP-06).
+          handle(ctx, child, first && LEADING_TYPES.has(child.type) ? info : undefined);
           first = false;
         }
         ctx.listDepth--;
@@ -338,7 +370,7 @@ function handle(ctx: Ctx, node: RootContent, listItem?: ListInfo): void {
       for (const c of node.children) handle(ctx, c);
       return;
     case 'html':
-      handleRawHtml(ctx, node.value, node.position?.start.line);
+      handleRawHtml(ctx, node.value, node.position?.start.line, listItem);
       return;
     case 'footnoteDefinition':
       if (hiddenWrapped(ctx)) return;
@@ -365,12 +397,18 @@ function footnoteText(node: Nodes): string {
 
 /** A raw HTML block in Markdown is parsed with the HTML extractor so its content takes part in the
  * comparison; the report shows that this happened. Comments and bare tags without text yield nothing. */
-function handleRawHtml(ctx: Ctx, value: string, line: number | undefined): void {
+function handleRawHtml(ctx: Ctx, value: string, line: number | undefined, listItem?: ListInfo): void {
   // Wrappers an earlier raw block left open are written in front of this one, on the same line, so the extractor
-  // sees the same element tree a browser would and hides what a hidden wrapper still covers (P07).
-  const prefix = ctx.wrappers.map((w) => `<${w.name}${w.hidden ? ' hidden' : ''}>`).join('');
-  const fragment = prefix + value;
-  ctx.wrappers = openWrappers(fragment);
+  // sees the same element tree a browser would and hides what a covering wrapper still holds (P07). A wrapper that
+  // hides is written with the hidden attribute whatever hid it, and an anchor with its href.
+  const prefix = ctx.wrappers.map((w) => `<${w.name}${w.covers ? ' hidden' : ''}${w.href !== undefined ? ` href="${w.href.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"` : ''}>`).join('');
+  // The stack always follows the prefix, because a closing tag here may end an element opened earlier. The extractor
+  // sees the prefix only while an open element hides content or links it: with nothing of the kind open the block is
+  // read on its own, as before (a long run of unclosed visible tags costs the stack but no tree per block).
+  const relevant = ctx.wrappers.some((w) => w.covers || w.href !== undefined);
+  ctx.wrappers = openWrappers(prefix + value);
+  if (ctx.wrappers.length > ctx.maxDepth) throw new HtmlDepthError(ctx.wrappers.length, ctx.maxDepth);
+  const fragment = relevant ? prefix + value : value;
   // Text check for the fallback warning, taken from the parsed DOM rather than from regex stripping:
   // comments are not text, and script, style, template and noscript are page machinery on both sides,
   // so their content does not count as skipped text. Hidden elements are left out, as in the extraction.
@@ -389,12 +427,22 @@ function handleRawHtml(ctx: Ctx, value: string, line: number | undefined): void 
   }
   const blocks = parsed?.blocks ?? [];
   if (blocks.length > 0) {
+    let lead = listItem !== undefined && rawLeadsItem(value);
     for (const b of blocks) {
       // The wrapper <body> sits on the fragment's first line, so the extractor's line is 1-based within
       // the fragment and maps onto the html node's start line.
       const inner = b.location.line;
       const absolute = line !== undefined && inner !== undefined ? line + inner - 1 : line;
-      ctx.blocks.push({ ...b, location: { line: absolute, blockIndex: ctx.blocks.length } });
+      let block: Block = { ...b, location: { line: absolute, blockIndex: ctx.blocks.length } };
+      // A list inside a raw block sits below the Markdown list the block is in (MP-05).
+      if (block.list && ctx.listDepth > 0) block = { ...block, list: { ...block.list, depth: block.list.depth + ctx.listDepth } };
+      // The first block of a raw block that leads a Markdown list item is the item's own text, or the item's leading
+      // heading, code or table, and carries the item's list context (MP-05, MP-06). A nested list there has its own.
+      if (lead) {
+        lead = false;
+        if (!block.list && listItem) block = { ...block, ...(block.type === 'paragraph' ? { type: 'listItem' as const } : {}), list: { ...listItem } };
+      }
+      ctx.blocks.push(block);
     }
     // The nested extraction's own structural "not compared" issues (a spanned table, a reversed list) were
     // read off parsed.blocks only up to here; parsed.issues was silently dropped, so a page whose span or
@@ -412,31 +460,57 @@ function handleRawHtml(ctx: Ctx, value: string, line: number | undefined): void 
   }
 }
 
-const MACHINERY = new Set(['script', 'style', 'template', 'noscript']);
+/**
+ * Whether a raw HTML block that leads a Markdown list item is read as the item's own content, by the rule of html.ts
+ * handleListItem: the item's own text or inline content, a paragraph without block children, a heading, a pre or a
+ * table. Any other block element (div, blockquote, section, details, a list) is a block child of the item and gets no
+ * list context, as on the HTML side (N-1).
+ */
+function rawLeadsItem(value: string): boolean {
+  for (const node of parseDocument(value).children) {
+    if (node instanceof Text) {
+      if (node.data.trim() !== '') return true;
+      continue;
+    }
+    if (!(node instanceof Element)) continue;
+    const name = node.name.toLowerCase();
+    if (opensExcludedSubtree(name, node.attribs) || node.attribs['hidden'] !== undefined || node.attribs['aria-hidden'] === 'true') continue;
+    if (name === 'p') return !node.children.some((c) => c instanceof Element && BLOCK_TAGS.has(c.name.toLowerCase()));
+    if (/^h[1-6]$/.test(name) || name === 'pre' || name === 'table') return true;
+    return !BLOCK_TAGS.has(name);
+  }
+  return false;
+}
 
-/** Whether a hidden raw HTML wrapper from an earlier block is still open. */
+/** Whether a raw HTML wrapper from an earlier block that hides what it holds is still open. */
 function hiddenWrapped(ctx: Ctx): boolean {
-  return ctx.wrappers.length > 0;
+  return ctx.wrappers.some((w) => w.covers);
 }
 
 /**
- * The elements still open at the end of a raw HTML fragment, from the outermost hidden or aria-hidden one inward,
- * or none when no hidden element is open. The parser is not ended, because ending it closes every open element and
- * the open ones are the answer. Bounded by the nesting limit: a deeper stack stops the comparison in extractHtml.
+ * The elements still open at the end of a raw HTML fragment, all of them from the outermost. An element hides content
+ * when it is hidden or aria-hidden or the HTML side leaves its subtree out (a nav, a form, a role such as navigation);
+ * a visible anchor with an href links what it holds. The visible elements are kept as well, because an element opened
+ * in an earlier block can be hidden or linked only by a later one, and because their closing tags close what is open
+ * inside them: </ul> ends an open <li hidden> (MP-07). The parser is not ended, because ending it closes every open
+ * element and the open ones are the answer. The stack is written in front of every following raw block, so the caller
+ * stops the comparison when it is deeper than the nesting limit, as the same nesting is on the HTML side.
  */
 function openWrappers(fragment: string): Wrapper[] {
   const stack: Wrapper[] = [];
   const parser = new Parser({
     onopentag(name, attribs) {
-      stack.push({ name, hidden: attribs['hidden'] !== undefined || attribs['aria-hidden'] === 'true' });
+      const covers = attribs['hidden'] !== undefined || attribs['aria-hidden'] === 'true' || opensExcludedSubtree(name, attribs);
+      const wrapper: Wrapper = { name, covers };
+      if (name === 'a' && attribs['href'] !== undefined && !covers) wrapper.href = attribs['href'];
+      stack.push(wrapper);
     },
     onclosetag() {
       stack.pop();
     },
   }, { decodeEntities: true });
   parser.write(fragment);
-  const first = stack.findIndex((w) => w.hidden);
-  return first < 0 ? [] : stack.slice(first);
+  return stack;
 }
 
 /** Strictly normalized text of an HTML fragment as a parser sees it: text nodes only, comments and
@@ -447,7 +521,9 @@ function visibleText(fragment: string): string {
     for (const node of nodes) {
       if (node instanceof Text) parts.push(node.data);
       else if (node instanceof Element) {
-        if (MACHINERY.has(node.name.toLowerCase())) continue;
+        // The subtrees the HTML side leaves out (script, style, template, noscript, nav, form, dialog, a role such as
+        // navigation and the rest of opensExcludedSubtree) are not text that was left unread (MP-04).
+        if (opensExcludedSubtree(node.name.toLowerCase(), node.attribs)) continue;
         if (node.attribs['hidden'] !== undefined || node.attribs['aria-hidden'] === 'true') continue;
         walk(node.children);
       }

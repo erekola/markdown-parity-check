@@ -1,6 +1,7 @@
 // Text normalization. Strict normalization preserves case, applies NFC, removes the characters in ZERO_WIDTH,
-// maps the spaces in NBSP to a plain space and collapses whitespace. Loose normalization aligns blocks and
-// classifies minor text differences (TEXT_MINOR_CHANGED).
+// maps the spaces in NBSP to a plain space and collapses whitespace. Loose normalization aligns blocks. The text key
+// (textKey) classifies minor text differences (TEXT_MINOR_CHANGED): it keeps the marks and symbols that loose
+// normalization drops, so a changed mark or symbol is a text change.
 
 const NBSP = /[\u00a0\u2007\u202f]/g;
 const WS = /[ \t\r\n\f\v]+/g;
@@ -20,7 +21,9 @@ export function strictNormalize(text: string): string {
     .trim();
 }
 
-export function looseNormalize(text: string): string {
+/** The folding the loose text and the text key share: joiners out, case folded, typographic quotes, dashes and the
+ * ellipsis in their plain forms. */
+function fold(text: string): string {
   return strictNormalize(text)
     .replace(JOINERS, '')
     .toLowerCase()
@@ -28,8 +31,31 @@ export function looseNormalize(text: string): string {
     .replace(/[\u2018\u2019\u201a\u2032]/g, "'")
     .replace(/[\u201c\u201d\u201e\u2033]/g, '"')
     .replace(/[\u2010-\u2015\u2212]/g, '-')
-    .replace(/\u2026/g, '...')
+    .replace(/\u2026/g, '...');
+}
+
+/** The key that aligns blocks: everything that is not a letter, a number or white space becomes a space, so two
+ * blocks that differ in punctuation, marks or symbols still pair. */
+export function looseNormalize(text: string): string {
+  return fold(text)
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Code points that render as nothing by default: variation selectors, the combining grapheme joiner, the word joiner
+// and the like. They are not content, so a difference in them alone is not a text change.
+const IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
+
+/** The key that classifies a text difference: the loose text, except that the marks (\p{M}) and the symbols (\p{S})
+ * are kept, because a different vowel sign, check mark, arrow, comparison or plus sign shows the reader something
+ * else. Only case, punctuation, typographic quotes and dashes, joiners and invisible code points stay minor
+ * (MP-11). Two texts with the same key but different strict text are TEXT_MINOR_CHANGED; with different keys they
+ * are TEXT_CHANGED. The key is not used for alignment. */
+export function textKey(text: string): string {
+  return fold(text)
+    .replace(IGNORABLE, '')
+    .replace(/[^\p{L}\p{N}\p{M}\p{S}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -67,9 +93,10 @@ export function stripControlChars(text: string): string {
 }
 
 // A numeric token: optional sign (ASCII hyphen, Unicode minus or plus) that is not preceded by a letter
-// or digit (so the "-09" in 2026-09-10 is a separator, not a sign), digits with inner separators
-// (decimal, thousands, date, time, version), optional percent or currency sign on either side.
-const NUMBER_RE = /(?<![\p{L}\p{N}])(?:[€$£]\s?)?[-\u2212+]?\d+(?:[.,:\/\-\u2010-\u2015\u2212]\d+)*\s?(?:%|€|\$|£)?/gu;
+// or digit (so the "-09" in 2026-09-10 is a separator, not a sign), digits of any script (\p{Nd}, so Arabic-Indic
+// and fullwidth digits carry a sign too, MP-12) with inner separators (decimal, thousands, date, time, version),
+// optional percent or currency sign on either side.
+const NUMBER_RE = /(?<![\p{L}\p{N}])(?:[€$£]\s?)?[-\u2212+]?\p{Nd}+(?:[.,:\/\-\u2010-\u2015\u2212]\p{Nd}+)*\s?(?:%|€|\$|£)?/gu;
 
 /** Extracts numeric tokens (prices, percentages, dates, versions, signed values) in source order. */
 export function extractNumbers(text: string): string[] {
@@ -457,9 +484,21 @@ export function visibleNumbers(text: string): string[] {
   return extractNumbers(hideUrlSecrets(text));
 }
 
+/** An href with only the characters the URL standard strips from its ends removed: the C0 controls and the space
+ * (U+0000 to U+0020). JavaScript's trim() also removes the no-break space, the ideographic space and the other
+ * Unicode spaces, which the URL parser keeps as part of the address, so a target that differs by one of them
+ * compared equal (MP-16). */
+export function trimHref(href: string): string {
+  let start = 0;
+  let end = href.length;
+  while (start < end && href.charCodeAt(start) <= 0x20) start++;
+  while (end > start && href.charCodeAt(end - 1) <= 0x20) end--;
+  return href.slice(start, end);
+}
+
 /** Resolves a possibly relative href against a base. Returns null when it cannot be resolved. */
 export function resolveHref(rawHref: string, base: string | null): string | null {
-  const href = rawHref.trim();
+  const href = trimHref(rawHref);
   if (href === '') return null;
   if (base) {
     try {

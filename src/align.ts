@@ -37,6 +37,12 @@ function looseKey(b: Block): string {
   return `${typeGroup(b)} ${b.loose}`;
 }
 
+/** The link targets of a block, with their texts, in order. Blocks with equal text and equal link signatures are the
+ * same block as far as the links go, so the alignment prefers them over equal-text blocks with other targets (MP-13). */
+function linkSignature(b: Block): string {
+  return b.links.map((l) => `${l.text}\x1f${l.resolved ?? l.rawHref}`).join('\x1e');
+}
+
 export const SIMILARITY_THRESHOLD = 0.6;
 export const UNCERTAIN_THRESHOLD = 0.8;
 
@@ -131,24 +137,36 @@ export function checkAlignmentLimit(htmlBlocks: number, markdownBlocks: number, 
   }
 }
 
-function lcs(keysA: string[], keysB: string[], maxPairs: number): Array<[number, number]> {
+/**
+ * Longest common subsequence of the strict keys. Among the chains of the same length it takes the one with the most
+ * pairs whose link signatures agree (MP-13): a match weighs W, a match with equal link signatures W + 1, and W is
+ * larger than the number of possible bonuses, so the length of the chain is decided first and the targets only break
+ * ties. Without links on either side every bonus is equal and the chain is the one the plain table gave.
+ */
+function lcs(keysA: string[], keysB: string[], sigA: string[], sigB: string[], maxPairs: number): Array<[number, number]> {
   const n = keysA.length;
   const m = keysB.length;
   checkAlignmentLimit(n, m, maxPairs);
+  const weight = Math.min(n, m) + 1;
   const dp: Uint32Array[] = [];
   for (let i = 0; i <= n; i++) dp.push(new Uint32Array(m + 1));
   for (let i = n - 1; i >= 0; i--) {
     const row = dp[i]!;
     const next = dp[i + 1]!;
     for (let j = m - 1; j >= 0; j--) {
-      row[j] = keysA[i] === keysB[j] ? next[j + 1]! + 1 : Math.max(next[j]!, row[j + 1]!);
+      let best = Math.max(next[j]!, row[j + 1]!);
+      if (keysA[i] === keysB[j]) {
+        const take = next[j + 1]! + weight + (sigA[i] === sigB[j] ? 1 : 0);
+        if (take > best) best = take;
+      }
+      row[j] = best;
     }
   }
   const out: Array<[number, number]> = [];
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
-    if (keysA[i] === keysB[j]) {
+    if (keysA[i] === keysB[j] && dp[i]![j]! === dp[i + 1]![j + 1]! + weight + (sigA[i] === sigB[j] ? 1 : 0)) {
       out.push([i, j]);
       i++;
       j++;
@@ -215,7 +233,7 @@ export function align(a: Block[], b: Block[], limits?: Partial<AlignmentLimits>)
   const keysA = a.map(strictKey);
   const keysB = b.map(strictKey);
 
-  for (const [i, j] of lcs(keysA, keysB, lim.maxAlignmentPairs)) {
+  for (const [i, j] of lcs(keysA, keysB, a.map(linkSignature), b.map(linkSignature), lim.maxAlignmentPairs)) {
     pairs.push({ a: i, b: j, kind: 'exact', similarity: 1 });
     usedA.add(i);
     usedB.add(j);

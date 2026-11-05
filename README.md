@@ -51,7 +51,7 @@ npx --yes markdown-parity-check --html-file page.html --markdown-file page.md --
 | --- | --- |
 | `0` | The comparison completed without a rejecting finding. |
 | `1` | The comparison completed and found rejecting content or delivery differences. |
-| `2` | An input, fetch, parse or report error prevented a reliable comparison. |
+| `2` | An input, fetch, parse or report error prevented a reliable comparison. A standard output that is closed before the report is written also gives 2. |
 
 Exit code 0 means the implemented checks found nothing to reject. It does not prove that the two versions mean the same thing.
 
@@ -78,10 +78,10 @@ A value that is outside these ranges, or that is not a plain run of digits, stop
 
 ### Example output
 
-This is the text report for the matching fixture pair in this repository, run with version 0.2.33 on 2026-11-05. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
+This is the text report for the matching fixture pair in this repository, run with version 0.2.34 on 2026-11-05. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
 
 ```text
-markdown-parity-check 0.2.33 (offline mode)
+markdown-parity-check 0.2.34 (offline mode)
 Result: PASS (0 error(s), 0 warning(s), 1 info)
 
 HTML:     test/fixtures/same/page.html (file, 1,017 bytes, base https://example.com/page)
@@ -110,10 +110,10 @@ Front matter is kept by default and compared as content. If the HTML does not ca
 
 ### Blocks and severities
 
-Headings, paragraphs, list items, tables, code blocks and links are compared block by block. A link that wraps block elements, such as a linked card with a heading and a paragraph, is compared as those blocks: each keeps its own type and heading level and carries the link, and the Markdown side is read the same way, so `## [Title](url)` is a heading with a link. In a table cell the link is read as part of the cell text. Content marked `hidden` or `aria-hidden="true"` is left out on both sides, also when a raw HTML wrapper such as `<div hidden>` is opened in one Markdown block and closed in a later one. A table caption counts as a paragraph before the table.
+Headings, paragraphs, list items, tables, code blocks and links are compared block by block. A link that wraps block elements, such as a linked card with a heading and a paragraph, is compared as those blocks: each keeps its own type and heading level and carries the link, and the Markdown side is read the same way, so `## [Title](url)` is a heading with a link. In a table cell the link is read as part of the cell text. Content that is hidden or sits inside a left-out element is left out on both sides, also when the raw HTML wrapper, such as `<div hidden>` or `<nav>`, is opened in one Markdown block and closed in a later one. A table caption counts as a paragraph before the table.
 
 - Errors: missing and added blocks, a change in text or numbers, a changed table or link, and a list item that shows another number or a different checked or unchecked state.
-- Warnings: a checkbox that is present on one side only, a difference in order, which is also reported for a block that moved and changed only in case, punctuation or typographic characters, and a difference in heading level, case, punctuation, list kind or nesting level. Each footnote in the Markdown is a warning, because footnotes are not compared. These are the main cases, and the `code` of each finding names the exact rule. A missing or extra copy of a repeated block is reported as a missing or added block, which is an error.
+- Warnings: a checkbox that is present on one side only, a difference in order, which is also reported for a block that moved and changed only in case, punctuation or typographic characters, and a difference in heading level, case, punctuation, list kind or nesting level. A block that moved and also changed in its words or numbers gets the finding for that change and no order finding. A changed accent mark, vowel sign, symbol or emoji is a change in text and not in punctuation, so it is an error. A swapped symbol is an error also when a reader sees the same meaning, for example an ASCII arrow made of a hyphen and a greater-than sign against an arrow character, or a dropped trademark sign. An invisible variation selector alone is not. Each footnote in the Markdown is a warning, because footnotes are not compared. These are the main cases, and the `code` of each finding names the exact rule. A missing or extra copy of a repeated block is reported as a missing or added block, which is an error.
 - Information: each skipped comparison, which does not fail a check, not even with `--strict`.
 
 The cell-by-cell comparison of a table is skipped when one of its cells has a rowspan or colspan above 1, a rowspan of 0, or a value that is empty or does not begin with a number. The number is read from the value's leading digits, so `2abc` counts as 2. A colspan of 0 and a rowspan or colspan of 1 do not trigger it. The links and the caption of such a table are still compared. The numbering of a reversed list is not compared either.
@@ -129,13 +129,15 @@ Some content is left out even when it sits inside the main content, in code bloc
 
 The `starlight` profile keeps an iframe that has a source and a title, as a link. The same list applies to inline raw HTML in the Markdown and to the checkbox of a task list item, which must belong to the item itself.
 
-A left-out tag in a Markdown paragraph, such as a `<button>` or a `<script>`, is skipped through its matching closing tag in the same paragraph. One with no closing tag is reported as a warning and its text is compared as visible. The void tags `input` and `embed` need no closing tag and are skipped on their own. A self-closing `<svg/>` counts as closed by itself, as in HTML, and `<button/>` does not.
+A left-out tag in a Markdown paragraph, such as a `<button>` or a `<script>`, is skipped through its matching closing tag in the same paragraph. Inside a paragraph, a left-out tag with no closing tag is reported as a warning and its text is compared as visible. A left-out wrapper such as `<nav>` or `<form>` that is opened in its own Markdown block and never closed hides every block after it, the way an unclosed element does in HTML, and a Markdown document left with no content ends with exit code 2. The void tags `input` and `embed` need no closing tag and are skipped on their own. A self-closing `<svg/>` counts as closed by itself, as in HTML, and `<button/>` does not.
 
 A `<br>` in a code block is a line break. A code block that differs only in whitespace is a warning, where whitespace means the ASCII whitespace characters and the Unicode space separators such as the no-break space. Any other difference in code, an invisible character such as a soft hyphen included, is an error. An image is compared by its alt text only, not by its address, so two different images with the same alt text compare equal.
 
 ### Delivery in URL mode
 
-In URL mode the Markdown response is checked first. An HTTP error or an HTML page in place of Markdown fails the check, and nothing is compared. A Markdown response labelled `text/plain` is a warning, and any other content type than `text/markdown` or `text/x-markdown` is an error. If the HTML request itself returns an HTTP error, the run ends with exit code 2.
+In URL mode the Markdown response is checked first. An HTTP error or an HTML page in place of Markdown fails the check, and nothing is compared. A Markdown response labelled `text/plain` is a warning, and any other content type than `text/markdown` or `text/x-markdown` is an error. A comment, an XML declaration or another declaration before the doctype does not hide an HTML page from this check. If the HTML request itself returns an HTTP error, the run ends with exit code 2.
+
+An HTML response is decoded by its byte order mark first, then by the charset of its Content-Type header, then by a meta charset declaration in its first 1024 bytes, and as UTF-8 when none of them names a known encoding. A Markdown response is decoded by the charset of its header, or as UTF-8.
 
 ### Limits of the method
 
@@ -158,9 +160,10 @@ The hosted page also answers a JSON POST, described on the page. It runs the rel
 Some limits are not in the table:
 
 - A URL that contains a user name or password is refused even when its host is public, and the same holds for a redirect target.
+- A host written as an IPv6 literal in brackets is checked against the same address policy as a resolved address and is not looked up in DNS.
 - The tool sends `Accept-Encoding: gzip, deflate, br` and decodes responses with no Content-Encoding, `identity`, `gzip`, `x-gzip`, `deflate` or `br`. A response with any other Content-Encoding, `zstd` for example, is rejected, and the run ends with exit code 2.
 - The command-line tool follows at most 5 redirects.
-- When elements are nested more than 1024 levels deep, in the HTML page, in a raw HTML block written inside the Markdown or in the Markdown's own structure, the extraction stops with exit code 2.
+- When elements are nested more than 1024 levels deep, in the HTML page, in a raw HTML block written inside the Markdown, across raw elements left open between Markdown blocks, or in the Markdown's own structure, the extraction stops with exit code 2.
 - The matching stops the same way when more than 1 000 000 similar block pairs would have to be considered. The library `limits` default to the same two values for block pairs and similar block pairs. `maxSimilarityWork` has no default bound.
 - The hosted page uses lower nesting and matching limits: 512 levels and 50 000 similar block pairs.
 
@@ -245,10 +248,10 @@ Only after that check does it create the GitHub release with the verified tarbal
 GitHub Actions publishes every version from 0.1.2 on with npm trusted publishing, and each one carries a provenance attestation. To check one, install it in an empty directory and ask npm to verify the signatures. Replace the version with the one you want to check.
 
 ```sh
-mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.33 --ignore-scripts && npm audit signatures
+mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.34 --ignore-scripts && npm audit signatures
 ```
 
-`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance. Tag `v0.2.33` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.33 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
+`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance. Tag `v0.2.34` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.34 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
 
 ## Security
 

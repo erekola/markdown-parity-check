@@ -111,13 +111,39 @@ function meta(e: Extraction): ExtractionMeta {
   return { strategy: e.strategy, confidence: e.confidence, blockCount: e.blocks.length, notes: e.notes };
 }
 
+/** The body after any comments, processing instructions (an XML declaration among them) and declarations other than
+ * a doctype html that come before its first content (MP-19). An unclosed comment or instruction leaves the rest as it is. */
+function afterPrologue(body: string): string {
+  let i = 0;
+  for (;;) {
+    while (i < body.length && /\s/.test(body[i]!)) i++;
+    let end: number;
+    if (body.startsWith('<!--', i)) {
+      end = body.indexOf('-->', i + 4);
+      if (end < 0) break;
+      i = end + 3;
+    } else if (body.startsWith('<?', i)) {
+      end = body.indexOf('>', i + 2);
+      if (end < 0) break;
+      i = end + 1;
+    } else if (body.startsWith('<!', i) && !/^<!doctype\s+html/i.test(body.slice(i, i + 32))) {
+      end = body.indexOf('>', i + 2);
+      if (end < 0) break;
+      i = end + 1;
+    } else {
+      break;
+    }
+  }
+  return body.slice(i);
+}
+
 /** Findings about how the Markdown was delivered, produced by the URL mode before extraction. */
 export function deliveryFindings(md: SourceMeta, body: string): Finding[] {
   const out: Finding[] = [];
   if (md.kind !== 'url') return out;
   const ct = (md.contentType ?? '').toLowerCase();
   const type = ct.split(';')[0]!.trim();
-  const looksHtml = /^\s*(?:<!doctype\s+html|<html[\s>])/i.test(body);
+  const looksHtml = /^\s*(?:<!doctype\s+html|<html[\s>])/i.test(afterPrologue(body));
   if (md.status !== undefined && md.status >= 400) {
     out.push({ code: 'DELIVERY_HTTP_ERROR', severity: 'error', direction: 'markdown_only', message: `The Markdown request returned HTTP ${md.status}; the error page is not treated as content.`, before: String(md.status) });
     return out;

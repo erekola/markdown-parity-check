@@ -400,7 +400,20 @@ export async function main(argv: string[], io: CliIo = { stdout: (s) => process.
 
 const invokedDirectly = process.argv[1] !== undefined && samePath(path.resolve(process.argv[1]), fileURLToPath(import.meta.url));
 if (invokedDirectly) {
+  // A reader that closes the pipe before the report is written (head -c 0, a pager that quit) makes the write fail with
+  // EPIPE. The report could not be delivered, which is a failed run: exit 2, as for every other report that cannot be
+  // written (MP-21). Without a listener the error was an unhandled event and the exit code was 1.
+  let outputFailed = false;
+  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+    outputFailed = true;
+    process.exitCode = 2;
+    try {
+      process.stderr.write(redactText(`Error: Cannot write the report to stdout: ${err.code ?? err.message}\n`));
+    } catch {
+      // stderr may be closed as well; the exit code carries the failure.
+    }
+  });
   main(process.argv.slice(2)).then((code) => {
-    process.exitCode = code;
+    if (!outputFailed) process.exitCode = code;
   });
 }

@@ -65,7 +65,7 @@ export function opensExcludedSubtree(name: string, attribs: Record<string, strin
   if (SKIP_TAGS.has(name)) return true;
   return SKIP_ROLES.has((attribs['role'] ?? '').toLowerCase());
 }
-const BLOCK_TAGS = new Set(['address', 'article', 'aside', 'blockquote', 'details', 'summary', 'dd', 'dl', 'dt', 'div', 'fieldset', 'figcaption', 'figure', 'footer', 'header', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hgroup', 'hr', 'li', 'main', 'ol', 'p', 'pre', 'section', 'table', 'ul', 'body', 'html', 'center', 'tr', 'td', 'th', 'thead', 'tbody', 'tfoot', 'caption']);
+export const BLOCK_TAGS = new Set(['address', 'article', 'aside', 'blockquote', 'details', 'summary', 'dd', 'dl', 'dt', 'div', 'fieldset', 'figcaption', 'figure', 'footer', 'header', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hgroup', 'hr', 'li', 'main', 'ol', 'p', 'pre', 'section', 'table', 'ul', 'body', 'html', 'center', 'tr', 'td', 'th', 'thead', 'tbody', 'tfoot', 'caption']);
 const HEADING_RE = /^h([1-6])$/;
 
 interface Ctx {
@@ -446,7 +446,9 @@ function taskState(li: Element, profile: 'generic' | 'starlight' = 'generic'): b
     if (!(node instanceof Element) || node.name === 'ul' || node.name === 'ol') continue;
     // The checkbox itself is the one skipped tag whose state is wanted; a hidden one is still ignored.
     if (node.name === 'input' && (node.attribs['type'] ?? '').toLowerCase() === 'checkbox') {
-      if (hiddenAttr(node)) continue;
+      // The checkbox's own role counts as well: a checkbox with an excluded role (navigation, dialog and the rest of
+      // SKIP_ROLES) is left out like any other element with that role, so it cannot answer for the item (MP-10).
+      if (hiddenAttr(node) || SKIP_ROLES.has((node.attribs['role'] ?? '').toLowerCase())) continue;
       return node.attribs['checked'] !== undefined;
     }
     // Every other subtree the extraction leaves out (a form, a nav, a template, a role such as navigation, hidden
@@ -467,6 +469,9 @@ function handleListItem(ctx: Ctx, li: Element): void {
   for (const child of li.children) {
     if (child instanceof Element && isSkipped(child, ctx.root, ctx.profile)) continue;
     const blockAnchor = child instanceof Element && isBlockAnchor(ctx, child) && !isParagraphOnlyAnchor(ctx, child);
+    // An item with no text of its own that starts with a heading, code or a table carries its list context on that
+    // first block, as the Markdown side does for the first child of an item (MP-06).
+    let leading = false;
     if (child instanceof Element && (BLOCK_TAGS.has(child.name) || blockAnchor || (ctx.profile === 'starlight' && child.name === 'starlight-tabs'))) {
       if (!ownFlushed && child.name === 'p' && !hasBlockChild(ctx, child) && strictNormalize(run.text) === '') {
         for (const c of child.children) inlineText(ctx, c, run);
@@ -474,14 +479,19 @@ function handleListItem(ctx: Ctx, li: Element): void {
         continue;
       }
       if (!ownFlushed) {
+        const pushed = ctx.blocks.length;
         flushRun(ctx, run, li, 'listItem', info);
+        leading = ctx.blocks.length === pushed && (HEADING_RE.test(child.name) || child.name === 'pre' || child.name === 'table');
         ownFlushed = true;
         run = newRun();
       } else {
         flushRun(ctx, run, li, 'paragraph');
         run = newRun();
       }
+      const first = ctx.blocks.length;
       handleBlock(ctx, child);
+      const lead = ctx.blocks[first];
+      if (leading && lead && ctx.blocks.length > first && lead.list === undefined) lead.list = { ...info };
     } else {
       inlineText(ctx, child, run);
     }
@@ -772,13 +782,17 @@ export function extractHtml(source: string, options: HtmlExtractOptions = {}): E
   }
   const { root, strategy, confidence } = pickRoot(doc, options.selector, notes, issues);
   const lineStarts = [0];
-  for (let i = 0; i < source.length; i++) if (source.charCodeAt(i) === 10) lineStarts.push(i + 1);
+  // A line break is LF, CRLF or a lone CR, as the Markdown parser counts them: the CR of a CRLF pair is not a second one.
+  for (let i = 0; i < source.length; i++) {
+    const c = source.charCodeAt(i);
+    if (c === 10 || (c === 13 && source.charCodeAt(i + 1) !== 10)) lineStarts.push(i + 1);
+  }
   if (profile === 'starlight') notes.push('Starlight profile: all associated tab panels are compared, including inactive panels; Expressive Code line boundaries and aside titles are retained.');
   const ctx: Ctx = { profile, base, source, lineStarts, blocks: [], notes, root, listBase: 0, ordinals: new Map(), segments: new Map(), issues };
   // A selector that picks a heading, list item, table or pre keeps that block type, so the root goes
   // through handleBlock. Every other root is read as a container, a list included: handleBlock's list
   // branch reads only <li> children, and a root list would lose any other content it holds.
-  if (HEADING_RE.test(root.name) || root.name === 'li' || root.name === 'table' || root.name === 'pre') handleBlock(ctx, root);
+  if (HEADING_RE.test(root.name) || root.name === 'li' || root.name === 'table' || root.name === 'pre' || (profile === 'starlight' && root.name === 'starlight-tabs')) handleBlock(ctx, root);
   else walk(ctx, root);
   return { blocks: ctx.blocks, strategy: profile === 'generic' ? strategy : `${strategy};profile:starlight`, confidence, notes, issues };
 }

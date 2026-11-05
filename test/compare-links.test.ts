@@ -21,17 +21,35 @@ function oldPairLinks(hLinks: Link[], mLinks: Link[]) {
   const remaining = mLinks.map((l, i) => ({ l, i }));
   const pairs: Array<[number, number]> = [];
   let missing: number[] = [];
-  hLinks.forEach((hl, hi) => {
-    let idx: number;
-    if (n(hLinks, hl.text) === n(mLinks, hl.text)) {
-      // 0.2.13 step 1: the k-th link with this text pairs with the k-th.
-      const k = hLinks.slice(0, hi).filter((l) => l.text === hl.text).length;
-      const target = mLinks.map((l, i) => ({ l, i })).filter((x) => x.l.text === hl.text)[k]!.i;
-      idx = remaining.findIndex((r) => r.i === target);
-    } else {
-      idx = remaining.findIndex((r) => r.l.text === hl.text && oldSameTarget(hl, r.l));
-      if (idx < 0) idx = remaining.findIndex((r) => r.l.text === hl.text);
-    }
+  // 0.2.34 (MP-14): the links of one text pair in order of occurrence. Equal counts pair one for one. With unequal counts the
+  // shorter side pairs with the longer side's links when its targets embed in order there (checked exhaustively, not
+  // greedily), otherwise the first links of the two sides pair by position and the surplus is missing or added.
+  const planned = new Map<number, number>();
+  for (const text of new Set(hLinks.map((l) => l.text))) {
+    const hs = hLinks.map((l, i) => (l.text === text ? i : -1)).filter((i) => i >= 0);
+    const ms = mLinks.map((l, i) => (l.text === text ? i : -1)).filter((i) => i >= 0);
+    if (ms.length === 0) continue;
+    const hShort = hs.length < ms.length;
+    const [small, big] = hShort ? [hs, ms] : [ms, hs];
+    const same = (s: number, b: number) => (hShort ? oldSameTarget(hLinks[s]!, mLinks[b]!) : oldSameTarget(hLinks[b]!, mLinks[s]!));
+    const embed = (k: number, from: number): number[] | null => {
+      if (k === small.length) return [];
+      for (let j = from; j < big.length; j++) {
+        if (!same(small[k]!, big[j]!)) continue;
+        const rest = embed(k + 1, j + 1);
+        if (rest) return [big[j]!, ...rest];
+      }
+      return null;
+    };
+    const hit = hs.length === ms.length ? null : embed(0, 0);
+    small.forEach((s, k) => {
+      const b = hit ? hit[k]! : big[k]!;
+      if (hShort) planned.set(s, b);
+      else planned.set(b, s);
+    });
+  }
+  hLinks.forEach((_hl, hi) => {
+    const idx = planned.has(hi) ? remaining.findIndex((r) => r.i === planned.get(hi)) : -1;
     if (idx < 0) {
       missing.push(hi);
       return;
