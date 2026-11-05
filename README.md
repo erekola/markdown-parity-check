@@ -78,10 +78,10 @@ A value that is outside these ranges, or that is not a plain run of digits, stop
 
 ### Example output
 
-This is the text report for the matching fixture pair in this repository, run with version 0.2.32 on 2026-11-04. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
+This is the text report for the matching fixture pair in this repository, run with version 0.2.33 on 2026-11-05. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
 
 ```text
-markdown-parity-check 0.2.32 (offline mode)
+markdown-parity-check 0.2.33 (offline mode)
 Result: PASS (0 error(s), 0 warning(s), 1 info)
 
 HTML:     test/fixtures/same/page.html (file, 1,017 bytes, base https://example.com/page)
@@ -161,7 +161,7 @@ Some limits are not in the table:
 - The tool sends `Accept-Encoding: gzip, deflate, br` and decodes responses with no Content-Encoding, `identity`, `gzip`, `x-gzip`, `deflate` or `br`. A response with any other Content-Encoding, `zstd` for example, is rejected, and the run ends with exit code 2.
 - The command-line tool follows at most 5 redirects.
 - When elements are nested more than 1024 levels deep, in the HTML page, in a raw HTML block written inside the Markdown or in the Markdown's own structure, the extraction stops with exit code 2.
-- The matching stops the same way when more than 1 000 000 similar block pairs would have to be considered. The library `limits` default to the same two values.
+- The matching stops the same way when more than 1 000 000 similar block pairs would have to be considered. The library `limits` default to the same two values for block pairs and similar block pairs. `maxSimilarityWork` has no default bound.
 - The hosted page uses lower nesting and matching limits: 512 levels and 50 000 similar block pairs.
 
 A hosted check can fail on turva.dev's own pages as well. On 2026-09-11 the check of https://turva.dev/tools returned `fail` with five errors. The Markdown carries a Related heading and four links that the HTML page leaves out, and the report listed each of them. The same four targets are links inside that page's tool cards, so the report found a missing structure and not missing content. The page passed again on 2026-10-02. [HTML and Markdown can disagree](https://turva.dev/blog/html-and-markdown-can-disagree) reads that result in full.
@@ -199,7 +199,7 @@ The options type is `RunOptions`. It takes `selector`, `frontMatter`, `strict`, 
 
 When the Markdown source has `kind: 'url'` in its `meta`, the delivery check runs first and reads the HTTP `status` and `contentType` from that `meta`.
 
-A host with a smaller CPU or memory budget can pass lower `limits`, typed as `RunLimits`: `maxAlignmentPairs`, `maxSimilarityCandidates`, `maxSimilarityWork` and `maxNestingDepth`. The nesting limit also applies to raw HTML blocks inside the Markdown.
+A host with a smaller CPU or memory budget can pass lower `limits`, typed as `RunLimits`: `maxAlignmentPairs`, `maxSimilarityCandidates`, `maxSimilarityWork` and `maxNestingDepth`. The nesting limit also applies to raw HTML blocks inside the Markdown. Set `maxSimilarityWork` when the library compares untrusted documents: with the default limits one measured worst case at the full 4 000 000 block pairs took between 26 and 30 seconds, and a value of 2 000 000 made the pairing step stop after about 70 milliseconds, on top of the parse time. `align` and `compare` throw an `AlignmentLimitError` there, and `run` turns it into a `RunError` with the same message.
 
 The caller fetches the pages and decides which addresses are allowed. The address policy the command applies is exported as `assertPublicHost` and `isPublicAddress`.
 
@@ -245,10 +245,10 @@ Only after that check does it create the GitHub release with the verified tarbal
 GitHub Actions publishes every version from 0.1.2 on with npm trusted publishing, and each one carries a provenance attestation. To check one, install it in an empty directory and ask npm to verify the signatures. Replace the version with the one you want to check.
 
 ```sh
-mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.32 --ignore-scripts && npm audit signatures
+mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.33 --ignore-scripts && npm audit signatures
 ```
 
-`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance. Tag `v0.2.32` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.32 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
+`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance. Tag `v0.2.33` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.33 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
 
 ## Security
 

@@ -11,6 +11,7 @@ import type { Readable } from 'node:stream';
 import type { LookupFunction } from 'node:net';
 import { assertPublicHost, assertPublicResolved, BlockedAddressError } from './netguard.js';
 import { maskUrl, redactText } from './normalize.js';
+import { TOOL_NAME, TOOL_VERSION } from './version.js';
 
 export type FetchErrorKind = 'invalid_url' | 'blocked' | 'timeout' | 'too_large' | 'redirect_loop' | 'too_many_redirects' | 'network' | 'protocol';
 
@@ -172,8 +173,10 @@ class Deadline {
     if (this.expired) req.destroy(this.error);
   }
 
-  detach(): void {
-    this.active = null;
+  /** Forgets the request only if it is still the active one. The close event of a redirect hop fires after the
+   * next hop was attached, so an unconditional reset left the next hop outside the deadline. */
+  detach(req: http.ClientRequest): void {
+    if (this.active === req) this.active = null;
   }
 
   /** Races a promise against the deadline. */
@@ -226,7 +229,7 @@ function requestOnce(url: URL, address: { address: string; family: 4 | 6 }, opti
         headers: {
           Accept: options.accept,
           'Accept-Encoding': 'gzip, deflate, br',
-          'User-Agent': options.userAgent ?? 'markdown-parity-check/0.1 (+local content comparison)',
+          'User-Agent': options.userAgent ?? `${TOOL_NAME}/${TOOL_VERSION} (+local content comparison)`,
         },
         // Explicit default: TLS verification is never disabled.
         rejectUnauthorized: true,
@@ -293,7 +296,7 @@ function requestOnce(url: URL, address: { address: string; family: 4 | 6 }, opti
       if (err instanceof FetchError) reject(err);
       else reject(new FetchError('network', url.href, err.message));
     });
-    req.on('close', () => deadline.detach());
+    req.on('close', () => deadline.detach(req));
     deadline.attach(req);
     req.end();
   });

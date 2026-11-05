@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
+import type { AddressInfo, Socket } from 'node:net';
 import { after, before, describe, it } from 'node:test';
 import { fetchUrl, FetchError, validateUrl } from '../src/fetch.js';
 import { isPublicAddress, assertPublicHost } from '../src/netguard.js';
 import { startHarness, type Harness, MD_PAGE } from './harness.js';
+import { TOOL_NAME, TOOL_VERSION } from '../src/version.js';
 
 async function expectFetchError(p: Promise<unknown>, kind: string, re?: RegExp): Promise<FetchError> {
   try {
@@ -96,6 +99,50 @@ describe('fetchUrl against a loopback harness', () => {
     assert.equal(r.redirects, 1);
     await expectFetchError(fetchUrl(h.url('/loop'), h.options('text/html')), 'redirect_loop');
     await expectFetchError(fetchUrl(h.url('/many?n=0'), h.options('text/html')), 'too_many_redirects');
+  });
+  it('leaves no socket open when the hop after a redirect stalls past the deadline', async () => {
+    // G-75: the close event of hop 1 used to clear the deadline's active request after hop 2 was attached,
+    // so the timeout rejected the promise but never destroyed hop 2 and its socket stayed open.
+    const sockets = new Set<Socket>();
+    const srv = http.createServer((req, res) => {
+      if (req.url === '/a') {
+        res.writeHead(302, { Location: '/b' });
+        res.end();
+      }
+      // /b is never answered.
+    });
+    srv.on('connection', (s) => {
+      sockets.add(s);
+      s.on('close', () => sockets.delete(s));
+    });
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    try {
+      const port = (srv.address() as AddressInfo).port;
+      await expectFetchError(fetchUrl(`http://${h.host}:${port}/a`, h.options('text/html', { timeoutMs: 300 })), 'timeout');
+      for (let i = 0; i < 20 && sockets.size > 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(sockets.size, 0, `${sockets.size} server-side socket(s) still open 1 s after the timeout`);
+    } finally {
+      srv.closeAllConnections();
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
+    }
+  });
+  it('sends a User-Agent built from the tool version', async () => {
+    // G-186: the string was a literal that stayed at 0.1.
+    let seen: string | undefined;
+    const srv = http.createServer((req, res) => {
+      seen = req.headers['user-agent'];
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<html><body>x</body></html>');
+    });
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    try {
+      const port = (srv.address() as AddressInfo).port;
+      await fetchUrl(`http://${h.host}:${port}/`, h.options('text/html'));
+      assert.equal(seen, `${TOOL_NAME}/${TOOL_VERSION} (+local content comparison)`);
+    } finally {
+      srv.closeAllConnections();
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
+    }
   });
   it('blocks non-public targets directly, via DNS and via redirects, for IPv4 and IPv6', async () => {
     await expectFetchError(fetchUrl('http://127.0.0.1/', h.options('text/html')), 'blocked');

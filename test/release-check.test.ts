@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { checkRelease, compareTarballs, EXIT_MISMATCH, EXIT_MISSING, EXIT_VERIFIED, main, MAX_WAIT_ATTEMPTS, readTarball, ReleaseCheckError, sha512Integrity, waitForRelease, type FetchLike } from '../tools/release-check.js';
+import { checkRelease, compareTarballs, EXIT_MISMATCH, EXIT_MISSING, EXIT_VERIFIED, findConflictCopies, main, MAX_WAIT_ATTEMPTS, readTarball, ReleaseCheckError, sha512Integrity, waitForRelease, type FetchLike } from '../tools/release-check.js';
 import { ROOT } from './helpers.js';
 
 let tmp: string;
@@ -78,6 +78,43 @@ describe('tarball reader and comparison', () => {
     const diffs = compareTarballs(same1, changed);
     assert.equal(diffs.length, 1);
     assert.match(diffs[0]!, /content differs: package\/bin\/cli\.js/);
+  });
+});
+
+describe('sync conflict copies in the tarball', () => {
+  // G-29: a sync client left copies such as "cli (# Edit conflict 2026-11-03 abc123 #).js" in dist/, and npm
+  // pack collected them. The patterns are the ones tools/konfliktit.mjs of the workspace deletes or quarantines.
+  const entry = (name: string) => ({ name, mode: 0o644, size: 0, type: '0', content: Buffer.alloc(0) });
+  it('names every file whose basename has a conflict-copy form, in any folder of the package', () => {
+    const found = findConflictCopies([
+      entry('package/dist/src/cli.js'),
+      entry('package/dist/src/cli (# Edit conflict 2026-11-03 abc123 #).js'),
+      entry('package/dist/src/compare.d (# Delete conflict 2026-11-01 xyz #).ts'),
+      entry('package/dist/src/model-konfliktikopio-2026-11-03-ab12cd.js'),
+      entry('package/dist/src/deadline[conflict-0].js'),
+      entry('package/SECURITY.md'),
+    ]);
+    assert.equal(found.length, 4);
+    assert.ok(found.every((n) => !n.endsWith('cli.js') && !n.endsWith('SECURITY.md')));
+    assert.deepEqual(findConflictCopies([entry('package/dist/src/a.js'), entry('package/dist/src/b (c).js')]), []);
+  });
+  it('a real npm pack that holds a conflict copy is refused before the registry is asked', async () => {
+    const dir = path.join(tmp, 'conflict');
+    const clean = pack(dir, 'hello');
+    assert.deepEqual(findConflictCopies(readTarball(clean)), []);
+    fs.writeFileSync(path.join(dir, 'bin', 'cli (# Edit conflict 2026-11-03 abc123 #).js'), 'stale\n');
+    const dirty = pack(dir, 'hello');
+    assert.equal(findConflictCopies(readTarball(dirty)).length, 1);
+    let asked = false;
+    const spy: FetchLike = async (url, init) => {
+      asked = true;
+      return registry({ '1.0.0': { body: dirty } })(url, init);
+    };
+    const r = await checkRelease({ ...base, tarball: dirty, fetchFn: spy });
+    assert.equal(r.code, EXIT_MISMATCH);
+    assert.match(r.message, /conflict cop(y|ies)/);
+    assert.match(r.message, /Edit conflict/);
+    assert.equal(asked, false, 'the check fails before any registry request');
   });
 });
 

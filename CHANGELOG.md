@@ -2,6 +2,15 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.33 (2026-11-05)
+
+This release does not change which page pairs pass. It fixes a timeout that left a socket open after a redirect, builds the User-Agent from the tool version, makes the release check refuse a package that holds a sync conflict copy, and corrects what the documentation says about the time a comparison can take.
+
+- Timeout after a redirect: the close event of one redirect hop no longer clears the deadline's active request when the next hop is already running. Before, a server that redirected and then stalled made the fetch fail with a timeout after the deadline but left the second request and its socket open. The regression test in `test/fetch.test.ts` fails on 0.2.32.
+- User-Agent: the request header reads `markdown-parity-check/<version> (+local content comparison)` with the running version. It was a fixed `0.1`.
+- Release check: `tools/release-check.ts` fails, before any registry request, when the packed tarball holds a file whose name has the form of a sync conflict copy, such as `cli (# Edit conflict ... #).js`.
+- SECURITY.md and README: the time of the block pairing grows with the distinct words of each HTML block as well as with the number of block pairs, and `maxSimilarityWork` is unbounded by default. Both documents give one measured case and say that a library caller that compares untrusted documents should set the limit.
+
 ## 0.2.32 (2026-11-04)
 
 The tool compares exactly as it did before, and a report now names version 0.2.32. This release adds Node.js 26 to the CI matrix.

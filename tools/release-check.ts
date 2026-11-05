@@ -127,6 +127,25 @@ export function compareTarballs(local: Buffer, remote: Buffer): string[] {
   return diffs;
 }
 
+/** Basename forms of a sync client's conflict copies. These are the forms tools/konfliktit.mjs of the turva
+ * workspace recognises: "NAME (# Edit conflict ... #).EXT", "NAME-konfliktikopio-YYYY-MM-DD-ID.EXT" and
+ * "NAME[conflict-N].EXT". A package that contains one has collected a stale copy from the working tree. */
+const CONFLICT_COPY_PATTERNS: readonly RegExp[] = [
+  /^(.*?) \(# (Edit conflict|Delete conflict|Name clash) [^)]*#\)(\.[A-Za-z0-9]+)?$/,
+  /^(.*?)-konfliktikopio-\d{4}-\d{2}-\d{2}-[A-Za-z0-9]+(\.[A-Za-z0-9]+)?$/,
+  /^(.*?)\[conflict-\d+\](\.[^\\/]*)?$/,
+];
+
+/** Returns the paths of the entries whose file name has a conflict-copy form. */
+export function findConflictCopies(entries: readonly TarEntry[]): string[] {
+  return entries
+    .filter((e) => {
+      const base = e.name.slice(e.name.lastIndexOf('/') + 1);
+      return CONFLICT_COPY_PATTERNS.some((re) => re.test(base));
+    })
+    .map((e) => e.name);
+}
+
 /** Fetches the registry record of one version. Returns null only for an explicit HTTP 404. */
 export async function fetchRegistryVersion(registry: string, name: string, version: string, fetchFn: FetchLike): Promise<RegistryVersion | null> {
   // A scoped name keeps its leading @ and encodes the rest; the registry accepts @scope%2Fname.
@@ -187,6 +206,11 @@ export interface CheckResult {
 }
 
 export async function checkRelease(opts: { tarball: Buffer; name: string; version: string; registry: string; fetchFn: FetchLike }): Promise<CheckResult> {
+  // Before any registry request: a tarball with a conflict copy must not be published or compared (G-29).
+  const conflicts = findConflictCopies(readTarball(opts.tarball));
+  if (conflicts.length > 0) {
+    return { code: EXIT_MISMATCH, message: `${opts.name}@${opts.version}: the local tarball holds ${conflicts.length} sync conflict cop${conflicts.length === 1 ? 'y' : 'ies'}; remove ${conflicts.length === 1 ? 'it' : 'them'}, rebuild dist/ and pack again:\n  ${conflicts.join('\n  ')}` };
+  }
   const dist = await fetchRegistryVersion(opts.registry, opts.name, opts.version, opts.fetchFn);
   if (dist === null) return { code: EXIT_MISSING, message: `${opts.name}@${opts.version} is not on the registry (HTTP 404); the local tarball may be published.` };
   const remote = await downloadVerified(dist, opts.fetchFn);
