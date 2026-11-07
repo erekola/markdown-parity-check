@@ -13,6 +13,8 @@ const FORMS: Array<{ name: string; pattern: RegExp }> = [
   { name: 'Tag `vX.Y.Z`', pattern: /Tag `v(\d+\.\d+\.\d+)`/g },
   { name: 'commits/vX.Y.Z', pattern: /commits\/v(\d+\.\d+\.\d+)/g },
   { name: 'markdown-parity-check@X.Y.Z', pattern: /markdown-parity-check@(\d+\.\d+\.\d+)/g },
+  { name: 'example output sentence "run with version X.Y.Z on"', pattern: /run with version (\d+\.\d+\.\d+) on/g },
+  { name: 'example output header "markdown-parity-check X.Y.Z (offline mode)"', pattern: /^markdown-parity-check (\d+\.\d+\.\d+) \(offline mode\)$/gm },
 ];
 
 describe('README versions', () => {

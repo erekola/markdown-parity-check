@@ -422,7 +422,7 @@ function listOrdinals(ctx: Ctx, ol: Element): Map<Element, number> {
     n += reversed ? -1 : 1;
   });
   // A reversed list only gives its first item a browser-shown number (see above); Markdown has no reversed list,
-  // so the later numbers are never compared. Up to 0.2.15 that was silent; listInfo below now also leaves every
+  // so the later numbers are never compared. Up to 0.2.15 that was silent; listInfo above now also leaves every
   // item's ordinal out, not only the ones already undefined (0.2.16, found by an outside review 2026-09-28).
   if (reversed && items.length > 0) {
     ctx.issues.push({ code: 'EXTRACTION_LIST_REVERSED_NOT_COMPARED', severity: 'info', message: 'This list is reversed; its numbering is not compared, because Markdown has no reversed list to compare it against.', line: lineOf(ctx, ol) });
@@ -440,7 +440,7 @@ function taskState(li: Element, profile: 'generic' | 'starlight' = 'generic'): b
   while (stack.length > 0) {
     const node = stack.pop()!;
     // A <template> element's content is inert: the browser never renders it as part of the document, the
-    // same reason hiddenInPage above treats it like a hidden ancestor for the main extraction. taskState had
+    // same reason hiddenInPage below treats it like a hidden ancestor for the main extraction. taskState had
     // no matching check, so a checkbox sitting in a <template> answered for a later, real checkbox in the
     // same item (found by an outside review 2026-09-28).
     if (!(node instanceof Element) || node.name === 'ul' || node.name === 'ol') continue;
@@ -701,7 +701,7 @@ function hiddenInPage(el: Element): boolean {
 /** Whether the element, or any ancestor, is a subtree the extraction leaves out (navigation, a dialog, a banner
  * role and the rest of isSkipped). A candidate root inside one is page chrome, not main content. A plain <form> is
  * the one exception: a page-wide form (ASP.NET WebForms) wraps the real content, so a candidate inside it is kept
- * (Erik's foreman decision 2026-10-02). A form with a left-out role still counts. */
+ * (the maintainer's decision of 2026-10-02). A form with a left-out role still counts. */
 function inExcludedSubtree(el: Element): boolean {
   for (let cur: ParentNode | null = el; cur instanceof Element; cur = cur.parent) {
     if (cur.name === 'form' && cur !== el && !SKIP_ROLES.has((cur.attribs['role'] ?? '').toLowerCase())) continue;

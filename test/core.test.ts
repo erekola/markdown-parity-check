@@ -71,7 +71,7 @@ describe('library entry', () => {
     for (const f of [pkg.main, pkg.types]) assert.ok(fs.existsSync(path.join(ROOT, f)), `${f} must exist after the build`);
   });
 
-  it('exports exactly the documented runtime surface', () => {
+  it('exports exactly this runtime surface (the README documents only part of it)', () => {
     assert.deepEqual(Object.keys(core).sort(), [
       'AlignmentLimitError', 'BlockedAddressError', 'DEFAULT_LIMITS', 'LIMITATIONS', 'MAX_ALIGNMENT_PAIRS', 'MAX_NESTING_DEPTH', 'MAX_SIMILARITY_CANDIDATES', 'RunError',
       'TOOL_NAME', 'TOOL_VERSION', 'assertPublicHost', 'assertPublicResolved', 'checkAlignmentLimit', 'deliveryFindings', 'errorReport',

@@ -195,6 +195,9 @@ function inlineChildren(ctx: Ctx, children: PhrasingContent[], run: InlineRun, l
   }
 }
 
+// Foreign elements that may close themselves with a trailing slash. Of the two, only svg is a left-out tag of its own
+// (SKIP_TAGS in html.ts); math is left out only when it carries a left-out role such as navigation, so for math the
+// self-closing rule above applies only in that case.
 const FOREIGN_TAGS = new Set(['svg', 'math']);
 const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
 

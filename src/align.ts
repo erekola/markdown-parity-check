@@ -47,8 +47,9 @@ export const SIMILARITY_THRESHOLD = 0.6;
 export const UNCERTAIN_THRESHOLD = 0.8;
 
 /** Upper bound on the alignment work, as the product of the HTML and Markdown block counts. The LCS
- * table holds (n+1)*(m+1) Uint32 cells, 16 MiB at the limit (2 000 by 2 000 blocks), and the similarity
- * search visits at most n*m block pairs. Above the limit the comparison stops with an error before any
+ * table holds (n+1)*(m+1) Uint32 cells: 16 MiB for a square pair at the limit (2 000 by 2 000 blocks) and more for a
+ * lopsided pair with the same product (1 by 4 000 000 blocks is about 32 MB). The similarity search visits at most
+ * n*m block pairs. Above the limit the comparison stops with an error before any
  * table is allocated, instead of growing without bound with the page size. */
 export const MAX_ALIGNMENT_PAIRS = 4_000_000;
 

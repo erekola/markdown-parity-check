@@ -1,5 +1,5 @@
-// Regressions for the audit retest of 2026-09-28 that move the set of pairs that pass (0.2.16, Erik's decision,
-// see turva/tyot/astra-uusinta-2026-09-28/korjausohje.md): a hidden checkbox is ignored in task state (R3, decision
+// Regressions for the audit retest of 2026-09-28 that move the set of pairs that pass (0.2.16, Erik's decision):
+// a hidden checkbox is ignored in task state (R3, decision
 // 2), a userinfo wrapped in parentheses or broken by a raw space is masked (04 F02, 04 F04, M1), a text report
 // strips control characters (M3), limits.maxSimilarityWork also bounds unresolved same-label link pairing (M2, 04
 // F09), and a spanned table or a reversed list report an info finding instead of being compared (decision 6, M5,
@@ -56,12 +56,11 @@ describe('R3/decision 2: a hidden checkbox is ignored in task state', () => {
 describe('04 F02, 04 F04, M1: userinfo masking that a run boundary used to defeat', () => {
   it('a parenthesized user name right after "scheme://" is masked in a block excerpt', () => {
     const r = check(page('<p>Open https://(name):SECRET@example.test/page for the private report details today.</p>'), 'Open https://(name):SECRET@example.test/page for the private report details today.\n');
-    const excerpts = [r.h.blocks[0]?.location, ...r.findings.map((f) => f.html?.excerpt).filter(Boolean)];
+    assert.ok(r.findings.length > 0, 'the case must produce a finding to inspect');
     for (const f of r.findings) {
       if (f.html?.excerpt) assert.doesNotMatch(f.html.excerpt, /SECRET/, JSON.stringify(f));
       if (f.markdown?.excerpt) assert.doesNotMatch(f.markdown.excerpt, /SECRET/, JSON.stringify(f));
     }
-    void excerpts;
   });
   it('the GFM mailto link a parenthesized userinfo derives is masked too, not only the free text around it', () => {
     // The HTML side is plain text (no anchor), so GFM's own autolinking of the exposed password inside the

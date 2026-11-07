@@ -311,7 +311,7 @@ describe('maskHref in one pass (K4)', () => {
     for (const [input, expected] of MASK_URL_PINS) assert.equal(maskUrl(input), expected, JSON.stringify(input));
     for (const [input, expected] of REDACT_PINS) assert.equal(redactText(input), expected, JSON.stringify(input));
   });
-  it('masks 20 000 query keys in well under a second (loose limit; rerun alone if red under load)', () => {
+  it('masks 20 000 query keys in under two seconds (a loose limit, normally far below it; rerun alone if red under load)', () => {
     const href = 'https://example.test/target?' + Array.from({ length: 20000 }, (_, i) => `k${i}=x`).join('&');
     const t = process.hrtime.bigint();
     const out = maskHref(href);
@@ -445,7 +445,7 @@ describe('decompression stream is destroyed with the request (K5)', () => {
     ['createBrotliDecompress', 'br', () => zlib.brotliCompressSync(Buffer.alloc(64 * MIB, 0x61), { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 1, [zlib.constants.BROTLI_PARAM_LGWIN]: 24 } })],
   ];
   for (const [factory, encoding, make] of cases) {
-    it(`${encoding}: after the byte cap rejects, the decoder stops near the cap`, async () => {
+    it(`${encoding}: after the byte cap rejects, the decoder stops within 256 KiB and decodes far less than the 64 MiB it was offered`, async () => {
       const counters: Counter[] = [];
       count(factory, counters);
       const uncaught: unknown[] = [];

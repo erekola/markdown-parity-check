@@ -85,9 +85,10 @@ export function normalizeCode(code: string): string {
 // differently in a report than in the page. Both ranges match the hosted validator's stripControls(stripBidi()).
 const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202A-\u202E\u2066-\u2069]/g;
 
-/** Removes ANSI escape sequences, other C0 and C1 controls and the Unicode bidi controls from a value that may come from a compared page or a raw
- * argument, so a plain --format text report cannot replay them at the terminal (0.2.16, found by an outside
- * review 2026-09-28). */
+/** Removes the escape character (which starts an ANSI escape sequence), the other C0 and C1 controls and the Unicode
+ * bidi controls from a value that may come from a compared page or a raw argument, so a plain --format text report
+ * cannot replay them at the terminal (0.2.16, found by an outside review 2026-09-28). The printable rest of an escape
+ * sequence, such as the "[2J" of ESC [ 2 J, stays as inert text. */
 export function stripControlChars(text: string): string {
   return text.replace(CONTROL_CHARS, '');
 }

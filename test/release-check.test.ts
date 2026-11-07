@@ -83,7 +83,7 @@ describe('tarball reader and comparison', () => {
 
 describe('sync conflict copies in the tarball', () => {
   // G-29: a sync client left copies such as "cli (# Edit conflict 2026-11-03 abc123 #).js" in dist/, and npm
-  // pack collected them. The patterns are the ones tools/konfliktit.mjs of the workspace deletes or quarantines.
+  // pack collected them. The patterns are the forms a file sync leaves behind (konfliktikopio is Finnish for conflict copy, the form one sync tool writes).
   const entry = (name: string) => ({ name, mode: 0o644, size: 0, type: '0', content: Buffer.alloc(0) });
   it('names every file whose basename has a conflict-copy form, in any folder of the package', () => {
     const found = findConflictCopies([
@@ -264,11 +264,70 @@ describe('release workflow', () => {
   it('waits after publishing, checks before publishing without waiting, and never republishes an existing version', () => {
     const yml = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
     const step = yml.slice(yml.indexOf('- name: Publish to npm unless the registry already has this exact tarball'), yml.indexOf('- name: Create the GitHub release'));
-    const checks = [...step.matchAll(/node dist\/tools\/release-check\.js[^\n]*/g)].map((m) => m[0]);
+    const checks = [...step.matchAll(/node release-pack\/release-check\.js[^\n]*/g)].map((m) => m[0]);
     assert.equal(checks.length, 2);
     assert.equal(checks[0]!.includes('--wait-for-publish'), false, 'the first check decides whether to publish and must answer at once');
     assert.match(checks[1]!, /--wait-for-publish --attempts 20 --interval-ms 15000$/);
     assert.equal((step.match(/npm publish /g) ?? []).length, 1);
     assert.match(step, /if \[ "\$CHECK" -eq 10 \]; then\s+(?:#[^\n]*\n\s+)*npm publish /);
+  });
+});
+
+// Round 24, P2-7: the permission that lets npm trusted publishing issue a token belongs to a job with no checkout, no install
+// and no tests; the only repository code it runs is release-check.js, whose hash it checks. These tests read the workflow text, so moving id-token: write back next to the tests fails one of them.
+describe('release workflow permissions', () => {
+  const yml = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
+  const jobs = (text: string): Record<string, string> => {
+    const body = text.slice(text.indexOf('\njobs:\n') + 1);
+    const heads = [...body.matchAll(/^ {2}([a-z][a-z-]*):\n/gm)];
+    const out: Record<string, string> = {};
+    heads.forEach((m, i) => {
+      out[m[1]!] = body.slice(m.index!, heads[i + 1]?.index ?? body.length);
+    });
+    return out;
+  };
+  const parts = jobs(yml);
+
+  it('has a build, a publish and a release job, in that order of dependency, and the build job still waits for a successful CI push run', () => {
+    assert.deepEqual(Object.keys(parts), ['build', 'publish', 'release']);
+    assert.match(parts.publish!, /\n {4}needs: build\n/);
+    assert.match(parts.release!, /\n {4}needs: \[build, publish\]\n/);
+    assert.match(parts.build!, /github\.event\.workflow_run\.conclusion == 'success'/);
+    assert.match(parts.build!, /github\.event\.workflow_run\.event == 'push'/);
+    assert.match(parts.build!, /head_repository\.full_name == github\.repository/);
+  });
+  it('only the publish job holds id-token: write, and it holds nothing else and has no checkout, install or tests', () => {
+    const code = yml.split('\n').filter((l) => !l.trimStart().startsWith('#')).join('\n');
+    assert.equal((code.match(/id-token: write/g) ?? []).length, 1);
+    assert.match(yml, /^permissions:\n {2}contents: read\n/m);
+    assert.match(parts.publish!, /\n {4}permissions:\n {6}id-token: write\n {4}steps:/);
+    assert.doesNotMatch(parts.publish!, /actions\/checkout|npm ci|npm test|npm run|contents: write/);
+  });
+  it('the build job holds read access only and publishes nothing, and the release job holds contents: write and no token for npm', () => {
+    assert.match(parts.build!, /\n {4}permissions:\n {6}contents: read\n/);
+    assert.match(parts.build!, /npm test/);
+    assert.doesNotMatch(parts.build!, /id-token|npm publish|contents: write/);
+    assert.match(parts.release!, /\n {4}permissions:\n {6}contents: write\n/);
+    assert.doesNotMatch(parts.release!, /id-token|npm publish|npm ci|actions\/checkout|NODE_AUTH_TOKEN/);
+  });
+  it('the publish job checks the hash of the tarball the build job packed before it publishes', () => {
+    const check = parts.publish!.indexOf('- name: Check that the tarball is the file the build job packed');
+    const publish = parts.publish!.indexOf('- name: Publish to npm unless the registry already has this exact tarball');
+    assert.ok(check > 0 && publish > check, 'the hash check must come before the publish step');
+    assert.match(parts.publish!, /EXPECTED: \$\{\{ needs\.build\.outputs\.sha256 \}\}/);
+    assert.match(parts.build!, /sha256: \$\{\{ steps\.stage\.outputs\.sha256 \}\}/);
+  });
+  it('the publish job checks the hash of release-check.js, the one repository script it runs, before it publishes', () => {
+    const check = parts.publish!.indexOf('- name: Check that release-check.js is the file the build job built');
+    const publish = parts.publish!.indexOf('- name: Publish to npm unless the registry already has this exact tarball');
+    assert.ok(check > 0 && publish > check, 'the release-check hash check must come before the publish step');
+    assert.match(parts.publish!, /EXPECTED: \$\{\{ needs\.build\.outputs\.check_sha256 \}\}/);
+    assert.match(parts.build!, /check_sha256: \$\{\{ steps\.stage\.outputs\.check_sha256 \}\}/);
+    assert.match(parts.build!, /check_sha256=\$\(sha256sum release-pack\/release-check\.js/);
+  });
+  it('every action is pinned to a full commit SHA', () => {
+    const uses = [...yml.matchAll(/^\s*(?:- )?uses: (\S+)/gm)].map((m) => m[1]!);
+    assert.ok(uses.length >= 6, uses.join());
+    for (const u of uses) assert.match(u, /@[0-9a-f]{40}$/, u);
   });
 });

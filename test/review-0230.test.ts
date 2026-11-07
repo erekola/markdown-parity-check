@@ -1,7 +1,7 @@
 // A link whose children hold a block element (a linked card) is a container, not one run of inline text. Up to 0.2.29
 // the card's heading was flattened into the paragraph around it: a faithful Markdown card failed with four errors
 // and a Markdown copy that wrote the title as a plain linked paragraph passed, also under --strict (found on real
-// sites, 2026-11-02). Ten of the 17 tests fail on the 0.2.29 code; the other seven pin behaviour that must not change
+// sites, 2026-11-02). Ten of the 17 tests were written to fail on the 0.2.29 code; the other seven pin behaviour that must not change
 // (inline anchors, an anchor without href, hidden block children, the plain-paragraph list item, the table cell).
 
 import assert from 'node:assert/strict';

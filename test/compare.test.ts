@@ -21,7 +21,7 @@ const codes = (fs: Finding[]) => fs.map((f) => f.code);
 const errors = (fs: Finding[]) => fs.filter((f) => f.severity === 'error');
 
 describe('same content, different formatting', () => {
-  it('produces no findings at all', () => {
+  it('reports only the front matter note once the front matter is stripped, and warns and errors without stripping', () => {
     const r = runFixture('same', { frontMatter: 'strip' });
     // The only finding is the informational front matter note: no error, no warning.
     assert.deepEqual(codes(r.findings), ['MARKDOWN_FRONT_MATTER_STRIPPED']);
@@ -276,9 +276,12 @@ describe('regressions from the 2026-09-10 review', () => {
       const r = compare(extractHtml('<main><p>Keep.</p></main>'), extractMarkdown(`---\n\n${inner}\n\n---\n\nKeep.\n`));
       assert.equal(r.findings.some((f) => f.severity === 'error'), true, inner);
       const warn = r.findings.find((f) => f.code === 'MARKDOWN_POSSIBLE_FRONT_MATTER');
-      // A YAML-looking block is warned about (strict fails); a plainly non-YAML block is not.
-      if (inner.startsWith('-') || inner.startsWith('#') || inner.startsWith('Note:') || inner.startsWith('    ')) assert.equal(warn?.severity, 'warning', inner);
+      // Every block of this list looks like YAML front matter, so each one is warned about (strict fails).
+      assert.equal(warn?.severity, 'warning', inner);
     }
+    // Negative control: a plainly non-YAML block between fences is compared as content and not warned about.
+    const plain = compare(extractHtml('<main><p>Keep.</p></main>'), extractMarkdown('---\n\nPlain sentence without a colon\n\n---\n\nKeep.\n'));
+    assert.equal(plain.findings.some((f) => f.code === 'MARKDOWN_POSSIBLE_FRONT_MATTER'), false);
     const src = '---\ntitle: T\ntags:\n  - a\n  - b\n# c\n---\n\nBody.\n';
     const kept = extractMarkdown(src);
     assert.deepEqual(kept.issues.map((i) => [i.code, i.severity, i.line]), [['MARKDOWN_POSSIBLE_FRONT_MATTER', 'warning', 1]]);

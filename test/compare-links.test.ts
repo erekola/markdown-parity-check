@@ -1,8 +1,9 @@
 // The indexed link pairing and the counted number diff of 0.2.12 must give the same answer as the scans they
-// replaced (outside review 2026-09-26, F09). The old code is kept here as the reference and compared on random
-// input, the way test/linear.test.ts does for the redaction. 0.2.13 changed the pairing on purpose (F08: links whose
-// text occurs equally often on both sides pair in order; F11: what is left pairs by loose text), and the reference
-// carries both as plain loops around the old scan.
+// replaced (outside review 2026-09-26, F09). A plain-loop reference is kept here and compared on random input, the
+// way test/linear.test.ts does for the redaction. The reference is the old scan with the later pairing changes
+// written in as plain loops: 0.2.13 (F08: links whose text occurs equally often on both sides pair in order; F11:
+// what is left pairs by loose text) and 0.2.34 (MP-14: the full embedding search of oldPairLinks). So the pairLinks
+// test compares today's indexed implementation with a plain-loop one of the same rules, not with the 0.2.12 code.
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
@@ -118,7 +119,7 @@ const SHAPES: Array<Omit<Link, 'text'>> = [
 ];
 
 describe('indexed link pairing and counted number diff (0.2.12)', () => {
-  it('pairLinks gives the same pairs as the old scans on random link lists', () => {
+  it('pairLinks gives the same pairs as the plain-loop reference on random link lists', () => {
     const next = prng(20260926);
     const pick = <T>(xs: readonly T[]) => xs[Math.floor(next() * xs.length)]!;
     const list = () => Array.from({ length: Math.floor(next() * 9) }, () => ({ text: pick(TEXTS), ...pick(SHAPES) }));

@@ -1,5 +1,5 @@
-// Regressions for the third audit retest of 2026-09-28 (Tek-542, see
-// turva/tyot/astra-uusinta-2-2026-09-28/korjausohje-3.md): a numeric userinfo password must stay masked in
+// Regressions for the third audit retest of 2026-09-28 (Tek-542):
+// a numeric userinfo password must stay masked in
 // NUMBER_CHANGED (P-N1), a parenthesized userinfo longer than the old regex bound must still be masked
 // fail-closed (P-N2), a --timeout-ms value broken by a raw space must be masked in full (P-N3), --timeout-ms
 // and --max-bytes must reject a value Node cannot actually honor or that overflows to Infinity (P-N4), a
@@ -86,6 +86,7 @@ describe('P-N2: a parenthesized userinfo longer than the old regex bound is stil
   it('a 257-character parenthesized user name no longer bypasses the masking', () => {
     const sentence = `Open https://(${'u'.repeat(257)}):SYNTHETIC_SECRET@example.test/page for private report details today.`;
     const r = check(page(`<p>${sentence}</p>`), `${sentence}\n`);
+    assert.ok(r.findings.length > 0, 'the case must produce a finding to inspect');
     for (const f of r.findings) {
       const fields = [f.message, f.before, f.after, f.html?.excerpt, f.markdown?.excerpt].filter((v): v is string => typeof v === 'string');
       for (const v of fields) assert.doesNotMatch(v, /SYNTHETIC_SECRET/, JSON.stringify(f));
@@ -94,6 +95,7 @@ describe('P-N2: a parenthesized userinfo longer than the old regex bound is stil
   it('a 4000-character secret with no closing landmark nearby stays masked through the scan window', () => {
     const sentence = `Open https://(name):${'s'.repeat(4000)}SYNTHETIC_TAIL@example.test/page today.`;
     const r = check(page(`<p>${sentence}</p>`), `${sentence}\n`);
+    assert.ok(r.findings.length > 0, 'the case must produce a finding to inspect');
     for (const f of r.findings) {
       const fields = [f.message, f.before, f.after, f.html?.excerpt, f.markdown?.excerpt].filter((v): v is string => typeof v === 'string');
       for (const v of fields) assert.doesNotMatch(v, /SYNTHETIC_TAIL/, JSON.stringify(f));
@@ -253,6 +255,15 @@ describe('V10-P3-01: a diagnostic value is capped and reported in its own field,
     const r = cli([...args, '--selector', ':::bad']);
     assert.equal(r.code, 2);
     assert.match(r.err, /Invalid selector/);
+    // The text report on stdout shows the value once, in the result line.
+    assert.equal(r.out.split(':::bad').length - 1, 1, r.out);
+    assert.match(r.out, /Result: ERROR\. Invalid selector: .* \(value: ":::bad"\)/);
+    // The JSON report carries it in its own field, capped at 120 characters when it is longer.
+    const json = JSON.parse(cli([...args, '--selector', ':::bad', '--format', 'json']).out) as Report;
+    assert.equal(json.summary.errorValue, ':::bad');
+    const longSelector = `:::${'b'.repeat(300)}`;
+    const longJson = JSON.parse(cli([...args, '--selector', longSelector, '--format', 'json']).out) as Report;
+    assert.equal(longJson.summary.errorValue, longSelector.slice(0, 120));
   });
   it('a matched selector is unaffected', () => {
     const args = writeFiles('selector-ok', page('<p>Hello.</p>'), 'Hello.\n');

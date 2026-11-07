@@ -117,7 +117,7 @@ describe('linear-time redaction and address parsing (0.2.2)', () => {
     }
   });
 
-  it('redactText strips ANSI and other C0 control characters (0.2.16)', () => {
+  it('redactText removes the escape character and leaves the rest of an ANSI sequence as text (0.2.16; the wider C0 and C1 set is pinned in review-1023.test.ts)', () => {
     const text = 'Start \x1b[2J hidden terminal control';
     const out = redactText(text);
     assert.doesNotMatch(out, /\x1b/);

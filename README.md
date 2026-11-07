@@ -78,10 +78,10 @@ A value that is outside these ranges, or that is not a plain run of digits, stop
 
 ### Example output
 
-This is the text report for the matching fixture pair in this repository, run with version 0.2.34 on 2026-11-05. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
+This is the text report for the matching fixture pair in this repository, run with version 0.2.35 on 2026-11-07. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
 
 ```text
-markdown-parity-check 0.2.34 (offline mode)
+markdown-parity-check 0.2.35 (offline mode)
 Result: PASS (0 error(s), 0 warning(s), 1 info)
 
 HTML:     test/fixtures/same/page.html (file, 1,017 bytes, base https://example.com/page)
@@ -202,18 +202,19 @@ The options type is `RunOptions`. It takes `selector`, `frontMatter`, `strict`, 
 
 When the Markdown source has `kind: 'url'` in its `meta`, the delivery check runs first and reads the HTTP `status` and `contentType` from that `meta`.
 
-A host with a smaller CPU or memory budget can pass lower `limits`, typed as `RunLimits`: `maxAlignmentPairs`, `maxSimilarityCandidates`, `maxSimilarityWork` and `maxNestingDepth`. The nesting limit also applies to raw HTML blocks inside the Markdown. Set `maxSimilarityWork` when the library compares untrusted documents: with the default limits one measured worst case at the full 4 000 000 block pairs took between 26 and 30 seconds, and a value of 2 000 000 made the pairing step stop after about 70 milliseconds, on top of the parse time. `align` and `compare` throw an `AlignmentLimitError` there, and `run` turns it into a `RunError` with the same message.
+A host with a smaller CPU or memory budget can pass lower `limits`, typed as `RunLimits`: `maxAlignmentPairs`, `maxSimilarityCandidates`, `maxSimilarityWork` and `maxNestingDepth`. The nesting limit also applies to raw HTML blocks inside the Markdown. Set `maxSimilarityWork` when the library compares untrusted documents: with the default limits one worst case at the full 4 000 000 block pairs (100 HTML blocks of 870 distinct words against 40 000 Markdown blocks of one word each) took between 26 and 30 seconds in hand timings on development machines, and a value of 2 000 000 made the pairing step stop after about 70 milliseconds, on top of the parse time. The test suite runs the bounded case and asserts no time. When a limit is exceeded, `run` throws a `RunError` whose message names the limit, and the command line reports it with exit code 2.
 
 The caller fetches the pages and decides which addresses are allowed. The address policy the command applies is exported as `assertPublicHost` and `isPublicAddress`.
 
 ### Report format
 
-The JSON report is the `Report` type. Its main fields are:
+The JSON report is the `Report` type. Its top-level fields are:
 
 | Field | Content |
 | --- | --- |
 | `schemaVersion` | The number `1`. |
 | `toolVersion` | The release that produced the report. |
+| `generatedAt` | The time the report was made, as an ISO 8601 timestamp in UTC. |
 | `mode` | `url` or `offline`. |
 | `sources` | The metadata of the HTML and the Markdown input. |
 | `extraction` | How each side was extracted. It is `null` in an error report and in a result that failed at the delivery check, because no extraction result is reported then. |
@@ -248,10 +249,10 @@ Only after that check does it create the GitHub release with the verified tarbal
 GitHub Actions publishes every version from 0.1.2 on with npm trusted publishing, and each one carries a provenance attestation. To check one, install it in an empty directory and ask npm to verify the signatures. Replace the version with the one you want to check.
 
 ```sh
-mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.34 --ignore-scripts && npm audit signatures
+mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.35 --ignore-scripts && npm audit signatures
 ```
 
-`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance. Tag `v0.2.34` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.34 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
+`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance. Tag `v0.2.35` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.35 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
 
 ## Security
 

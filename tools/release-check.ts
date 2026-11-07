@@ -105,8 +105,10 @@ export function readTarball(gz: Buffer): TarEntry[] {
   return entries;
 }
 
-/** Compares two package tarballs. Byte-identical archives match at once; otherwise the full entry list,
- * every file's bytes and the executable bit are compared and every difference is listed. */
+/** Compares two package tarballs. Byte-identical archives match at once; otherwise the list of regular files,
+ * every file's bytes and the executable bit are compared and every difference is listed. Links, directories and
+ * other entry types are not compared (readTarball returns regular files only; npm pack writes no others). Archives
+ * that differ in bytes always return at least one difference, so an empty result means byte-identical. */
 export function compareTarballs(local: Buffer, remote: Buffer): string[] {
   if (local.equals(remote)) return [];
   const a = readTarball(local);
@@ -127,9 +129,9 @@ export function compareTarballs(local: Buffer, remote: Buffer): string[] {
   return diffs;
 }
 
-/** Basename forms of a sync client's conflict copies. These are the forms tools/konfliktit.mjs of the turva
- * workspace recognises: "NAME (# Edit conflict ... #).EXT", "NAME-konfliktikopio-YYYY-MM-DD-ID.EXT" and
- * "NAME[conflict-N].EXT". A package that contains one has collected a stale copy from the working tree. */
+/** Basename forms of a sync client's conflict copies: "NAME (# Edit conflict ... #).EXT",
+ * "NAME-konfliktikopio-YYYY-MM-DD-ID.EXT" (konfliktikopio is Finnish for conflict copy, the form one sync tool writes)
+ * and "NAME[conflict-N].EXT". A package that contains one has collected a stale copy from the working tree. */
 const CONFLICT_COPY_PATTERNS: readonly RegExp[] = [
   /^(.*?) \(# (Edit conflict|Delete conflict|Name clash) [^)]*#\)(\.[A-Za-z0-9]+)?$/,
   /^(.*?)-konfliktikopio-\d{4}-\d{2}-\d{2}-[A-Za-z0-9]+(\.[A-Za-z0-9]+)?$/,
@@ -218,8 +220,8 @@ export async function checkRelease(opts: { tarball: Buffer; name: string; versio
   if (diffs.length > 0) {
     return { code: EXIT_MISMATCH, message: `${opts.name}@${opts.version} on the registry differs from the local tarball:\n  ${diffs.join('\n  ')}` };
   }
-  const identical = opts.tarball.equals(remote) ? 'byte-identical' : 'equal in file list, content and executable bits';
-  return { code: EXIT_VERIFIED, message: `${opts.name}@${opts.version} verified: registry integrity ${dist.integrity ?? dist.shasum} matches and the tarball is ${identical} to the local one.`, registryTarball: remote };
+  // compareTarballs returned no difference, which only byte-identical archives do.
+  return { code: EXIT_VERIFIED, message: `${opts.name}@${opts.version} verified: registry integrity ${dist.integrity ?? dist.shasum} matches and the tarball is byte-identical to the local one.`, registryTarball: remote };
 }
 
 export type SleepFn = (ms: number) => Promise<void>;

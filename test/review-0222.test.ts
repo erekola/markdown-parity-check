@@ -167,7 +167,7 @@ describe('P05: a code change is judged by whitespace only', () => {
     assert.deepEqual(codes(`<main><pre>${composed}t</pre></main>`, fence(`${decomposed}t`)), ['TEXT_CHANGED:error']);
   });
 
-  it('controls: indentation, tabs against spaces and line endings are still the whitespace warning, and equal code passes', () => {
+  it('controls: indentation and tabs against spaces are still the whitespace warning, equal code passes, and a space inside a word is a missing and an added block', () => {
     assert.deepEqual(codes('<main><pre>if (a) {\n  b();\n}</pre></main>', fence('if (a) {\n    b();\n}')), ['CODE_WHITESPACE_CHANGED:warning']);
     assert.deepEqual(codes('<main><pre>a\tb</pre></main>', fence('a b')), ['CODE_WHITESPACE_CHANGED:warning']);
     assert.equal(exitOf('<main><pre>a b</pre></main>', fence('a b'), defaultOpts), 0);
@@ -408,9 +408,9 @@ describe('0.2.22 follow-up F6: a scheme-less credential in a rejected option val
     }
   });
 
-  it('controls: a plain value, a value without an at sign and a URL with a host keep their output', () => {
+  it('controls: a plain value and a value without an at sign keep their output, and a URL with credentials keeps its host but not the credentials', () => {
     assert.throws(() => parseCliArgs(['--format', 'xml']), /\(got "xml"\)/);
     assert.throws(() => parseCliArgs(['--format', 'a/b']), /\(got "a\/b"\)/);
-    assert.throws(() => parseCliArgs(['--format', 'ftp://user:pw@example.test/?t=T']), (e: Error) => !/user|pw|=T/.test(e.message));
+    assert.throws(() => parseCliArgs(['--format', 'ftp://user:pw@example.test/?t=T']), (e: Error) => /example\.test/.test(e.message) && !/user|pw|=T/.test(e.message));
   });
 });

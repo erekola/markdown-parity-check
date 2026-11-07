@@ -1,6 +1,6 @@
 {
   "name": "markdown-parity-check",
-  "version": "0.2.34",
+  "version": "0.2.35",
   "description": "Compares the main content of a web page's HTML and Markdown representations and reports concrete differences.",
   "keywords": [
     "markdown",
@@ -50,7 +50,6 @@
   "dependencies": {
     "css-select": "^7.0.0",
     "domhandler": "^6.0.1",
-    "domutils": "^4.0.2",
     "htmlparser2": "^12.0.0",
     "mdast-util-from-markdown": "^2.0.2",
     "mdast-util-gfm": "^3.1.0",

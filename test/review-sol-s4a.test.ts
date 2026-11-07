@@ -1,7 +1,7 @@
-// Regression tests for the S4 part A triage (MP-02 to MP-10 and MP-17): the inline HTML tag reader, the stack of raw
+// Regression tests for the S4 part A triage (MP-02 to MP-10 and MP-17, then the N-1 list-context cases at the end): the inline HTML tag reader, the stack of raw
 // HTML wrappers that stay open between Markdown blocks, the list context of raw HTML and of non-paragraph item
 // leads, the Starlight tabs root with --selector, the task checkbox with an excluded role, and CR-only line breaks.
-// A test whose name ends in "(control)" pins behaviour that must not change; the others fail on 0.2.33.
+// A test whose name ends in "(control)" pins behaviour that must not change; the others are written to fail on the 0.2.33 behaviour they change.
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';

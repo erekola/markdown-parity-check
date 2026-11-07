@@ -589,8 +589,11 @@ describe('MP-23: the import graph of the library entry reaches no Node.js built-
     }
   });
 
-  it('MP-23 a node: import planted at the end of a copied dependency file is found (negative control)', () => {
+  // Builds the copy with an import planted at the end of a copied dependency file and returns its entry file. Both MP-23
+  // tests below call it, so each one runs alone (--test-name-pattern) as well as in file order.
+  const buildPlanted = (): string => {
     const copy = path.join(tmp, 'planted');
+    fs.rmSync(copy, { recursive: true, force: true });
     fs.mkdirSync(path.join(copy, 'node_modules'), { recursive: true });
     const probe = path.join(copy, 'entry.js');
     fs.writeFileSync(probe, "import 'domhandler';\n");
@@ -605,6 +608,11 @@ describe('MP-23: the import graph of the library entry reaches no Node.js built-
     const inner = path.join(copy, 'node_modules', 'domhandler', 'dist', 'node.js');
     assert.ok(fs.existsSync(inner));
     fs.appendFileSync(inner, "\nimport 'node:fs';\n");
+    return probe;
+  };
+
+  it('MP-23 a node: import planted at the end of a copied dependency file is found (negative control)', () => {
+    const probe = buildPlanted();
     const planted = walk(probe);
     assert.equal(planted.bad.length, 1, planted.bad.join());
     assert.match(planted.bad[0]!, /domhandler\/dist\/node\.js imports node:fs/);
@@ -612,9 +620,7 @@ describe('MP-23: the import graph of the library entry reaches no Node.js built-
     assert.ok(!fs.readFileSync(path.join(ROOT, 'node_modules', 'domhandler', 'dist', 'node.js'), 'utf8').includes('node:fs'));
   });
   it('MP-23 a walk that stops at the bare specifier does not see the planted import (why the old test missed it)', () => {
-    const planted = path.join(tmp, 'planted', 'entry.js');
-    assert.ok(fs.existsSync(planted), 'the previous test builds the planted copy');
-    assert.deepEqual(walk(planted, false).bad, []);
+    assert.deepEqual(walk(buildPlanted(), false).bad, []);
   });
   it('MP-23 a conditional export for Node alone is not followed (no false positive)', () => {
     const dir = path.join(tmp, 'conditional');

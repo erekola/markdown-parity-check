@@ -67,8 +67,11 @@ describe('opt-in Starlight extraction', () => {
   it('refuses duplicate tab identifiers', () => {
     assert.throws(() => compare(tabHtml.replace('id="t2"', 'id="t1"'), tabMd), /ambiguous/);
   });
-  it('refuses duplicate or mismatched panel identifiers', () => {
+  it('refuses duplicate panel identifiers', () => {
     assert.throws(() => compare(tabHtml.replace('id="p2"', 'id="p1"'), tabMd), /ambiguous/);
+  });
+  it('refuses a panel identifier that no tab points to', () => {
+    assert.throws(() => compare(tabHtml.replace('id="p2"', 'id="p9"'), tabMd), /missing or ambiguous/);
   });
   it('refuses unexplained content outside the tab panels', () => {
     assert.throws(() => compare(tabHtml.replace('</starlight-tabs>', '<p>Important extra text</p></starlight-tabs>'), tabMd), /Unexpected text/);

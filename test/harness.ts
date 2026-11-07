@@ -87,7 +87,7 @@ export async function startHarness(): Promise<Harness> {
         return push();
       }
       case '/big-gzip': {
-        // 20 KiB compressed body that decodes to 2 MiB: the cap must apply to decoded bytes.
+        // About 2 KiB of compressed body that decodes to 2 MiB: the cap must apply to decoded bytes.
         const gz = zlib.gzipSync(Buffer.alloc(2 * 1024 * 1024, 0x61));
         res.writeHead(200, { 'Content-Type': 'text/markdown', 'Content-Encoding': 'gzip', 'Content-Length': String(gz.length) });
         return res.end(gz);
@@ -96,6 +96,29 @@ export async function startHarness(): Promise<Harness> {
         const gz = zlib.gzipSync(Buffer.from(MD_PAGE));
         res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Encoding': 'gzip' });
         return res.end(gz);
+      }
+      case '/x-gzip': {
+        const gz = zlib.gzipSync(Buffer.from(MD_PAGE));
+        res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Encoding': 'x-gzip' });
+        return res.end(gz);
+      }
+      case '/identity':
+        res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Encoding': 'identity' });
+        return res.end(MD_PAGE);
+      case '/zstd':
+        // The body is not real zstd data: the client must refuse the encoding before it reads anything.
+        res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Encoding': 'zstd' });
+        return res.end(Buffer.from('not zstd data'));
+      case '/accept-encoding':
+        return sendMd(String(req.headers['accept-encoding'] ?? ''));
+      case '/chain': {
+        // /chain?left=N answers N redirects in a row and then the normal page.
+        const left = Number(url.searchParams.get('left') ?? '0');
+        if (left > 0) {
+          res.writeHead(301, { Location: `/chain?left=${left - 1}` });
+          return res.end();
+        }
+        return wantsMd ? sendMd(MD_PAGE) : sendHtml();
       }
       case '/loop':
         res.writeHead(302, { Location: '/loop2' });

@@ -12,10 +12,21 @@ permissions:
 concurrency:
   group: release
   cancel-in-progress: false
+env:
+  RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+# Three jobs, so that the permission that lets npm trusted publishing issue a token (id-token: write) belongs to a job
+# that runs no checkout, no install and no tests of this repository or its dependencies:
+#   build    packs the tarball once and runs the install, type check and tests that decide whether it may be released.
+#            It holds read access only and no OIDC token.
+#   publish  holds id-token: write and nothing else. It has no checkout, no install and no tests. The only code of this
+#            repository it runs is release-check.js, compiled in the build job and handed over in the artifact. It checks
+#            the SHA-256 hash of the tarball and of release-check.js against the hashes the build job recorded, publishes
+#            the tarball and compares the registry copy with it.
+#   release  holds contents: write, creates the GitHub release and attaches the registry copy that publish verified.
+# The tarball that is packed is the file that is published to npm, compared with the registry copy and attached to the
+# release. Nothing is rebuilt between the jobs; the hash in the build job's outputs is what ties them together.
 jobs:
-  release:
-    # One job on purpose: the tarball packed here is the file that is published to npm, compared with
-    # the registry copy, and attached to the GitHub release. Nothing is rebuilt between the steps.
+  build:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
@@ -23,10 +34,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write
-      id-token: write
-    env:
-      RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+      contents: read
+    outputs:
+      name: ${{ steps.meta.outputs.name }}
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      tarball: ${{ steps.meta.outputs.tarball }}
+      sha256: ${{ steps.stage.outputs.sha256 }}
+      check_sha256: ${{ steps.stage.outputs.check_sha256 }}
     steps:
       - name: Stop unless the default branch is still at the tested commit
         shell: bash
@@ -46,7 +61,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
       - name: Read package name and version
         id: meta
@@ -65,9 +79,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p .release
-          awk -v v="$VERSION" 'index($0, "## " v " ") == 1 { f = 1; next } /^## / { f = 0 } f' CHANGELOG.md > .release/notes.md
-          if ! grep -q '[^[:space:]]' .release/notes.md; then
+          mkdir -p release-pack
+          awk -v v="$VERSION" 'index($0, "## " v " ") == 1 { f = 1; next } /^## / { f = 0 } f' CHANGELOG.md > release-pack/notes.md
+          if ! grep -q '[^[:space:]]' release-pack/notes.md; then
             echo "CHANGELOG.md has no section headed ## $VERSION, so there are no release notes" >&2
             exit 1
           fi
@@ -79,57 +93,140 @@ jobs:
           npm run typecheck
           npm test
       - name: Pack the release tarball once
+        id: stage
         env:
           TARBALL: ${{ steps.meta.outputs.tarball }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p .release/local .release/registry .release/asset
-          npm pack --pack-destination .release/local
-          test -f ".release/local/$TARBALL"
-          echo "local sha512: $(openssl dgst -sha512 -binary ".release/local/$TARBALL" | base64 -w0)"
+          npm pack --pack-destination release-pack
+          test -f "release-pack/$TARBALL"
+          # The publish job runs this file with no checkout. The package.json beside it makes Node read it as a module.
+          cp dist/tools/release-check.js release-pack/release-check.js
+          printf '{"type":"module"}\n' > release-pack/package.json
+          echo "local sha512: $(openssl dgst -sha512 -binary "release-pack/$TARBALL" | base64 -w0)"
+          echo "sha256=$(sha256sum "release-pack/$TARBALL" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "check_sha256=$(sha256sum release-pack/release-check.js | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Hand the tarball and the release check to the next jobs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-pack
+          path: release-pack
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+    steps:
+      - name: Stop unless the default branch is still at the tested commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Provenance records GITHUB_SHA of this job, so the check is made again here, directly before publishing.
+          if [ "$GITHUB_SHA" != "$RELEASE_SHA" ]; then
+            echo "The default branch is at $GITHUB_SHA, not at the tested commit $RELEASE_SHA. A later push made this run stale; the release for that push runs on its own. Nothing was published." >&2
+            exit 1
+          fi
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-pack
+          path: release-pack
+      - name: Check that the tarball is the file the build job packed
+        env:
+          TARBALL: ${{ needs.build.outputs.tarball }}
+          EXPECTED: ${{ needs.build.outputs.sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL="$(sha256sum "release-pack/$TARBALL" | cut -d' ' -f1)"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "release-pack/$TARBALL has sha256 $ACTUAL, the build job packed $EXPECTED; nothing was published" >&2
+            exit 1
+          fi
+      - name: Check that release-check.js is the file the build job built
+        env:
+          EXPECTED: ${{ needs.build.outputs.check_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL="$(sha256sum release-pack/release-check.js | cut -d' ' -f1)"
+          if [ -z "$EXPECTED" ] || [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "release-pack/release-check.js has sha256 $ACTUAL, the build job built $EXPECTED; nothing was published" >&2
+            exit 1
+          fi
       - name: Publish to npm unless the registry already has this exact tarball
         env:
-          NAME: ${{ steps.meta.outputs.name }}
-          VERSION: ${{ steps.meta.outputs.version }}
-          TARBALL: ${{ steps.meta.outputs.tarball }}
+          NAME: ${{ needs.build.outputs.name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TARBALL: ${{ needs.build.outputs.tarball }}
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p registry
           # Exit 0: the version exists and equals the local tarball. Exit 10: the version is missing.
           # Anything else (mismatch, wrong integrity, registry or network error) stops the release.
           set +e
-          node dist/tools/release-check.js --tarball ".release/local/$TARBALL" --name "$NAME" --version "$VERSION" --save ".release/registry/$TARBALL"
+          node release-pack/release-check.js --tarball "release-pack/$TARBALL" --name "$NAME" --version "$VERSION" --save "registry/$TARBALL"
           CHECK=$?
           set -e
           if [ "$CHECK" -eq 10 ]; then
             # Authentication is OIDC trusted publishing only; no token is configured. The very first
             # version of a package is published by the maintainer, because a trusted publisher can only
             # be configured on an existing package.
-            npm publish ".release/local/$TARBALL" --access public
+            npm publish "release-pack/$TARBALL" --access public
             # npm may answer 404 for a few minutes while it processes the new version (the 0.2.0 run
             # failed on that). Only that delay and temporary registry statuses are waited out, at most
             # 20 attempts 15 s apart; a mismatch or any other error still stops the release at once.
-            node dist/tools/release-check.js --tarball ".release/local/$TARBALL" --name "$NAME" --version "$VERSION" --save ".release/registry/$TARBALL" --wait-for-publish --attempts 20 --interval-ms 15000
+            node release-pack/release-check.js --tarball "release-pack/$TARBALL" --name "$NAME" --version "$VERSION" --save "registry/$TARBALL" --wait-for-publish --attempts 20 --interval-ms 15000
           elif [ "$CHECK" -ne 0 ]; then
             echo "release-check failed with exit $CHECK; not creating a tag or a release" >&2
             exit 1
           fi
-          test -f ".release/registry/$TARBALL"
-          cp ".release/registry/$TARBALL" ".release/asset/$TARBALL"
-          echo "registry sha512: $(openssl dgst -sha512 -binary ".release/asset/$TARBALL" | base64 -w0)"
+          test -f "registry/$TARBALL"
+          echo "registry sha512: $(openssl dgst -sha512 -binary "registry/$TARBALL" | base64 -w0)"
+      - name: Hand the registry copy to the release job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: registry-copy
+          path: registry
+          if-no-files-found: error
+          retention-days: 7
+  release:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-pack
+          path: release-pack
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: registry-copy
+          path: registry
       - name: Create the GitHub release with the registry-verified tarball
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          NAME: ${{ steps.meta.outputs.name }}
-          VERSION: ${{ steps.meta.outputs.version }}
-          TAG: ${{ steps.meta.outputs.tag }}
-          TARBALL: ${{ steps.meta.outputs.tarball }}
+          NAME: ${{ needs.build.outputs.name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TAG: ${{ needs.build.outputs.tag }}
+          TARBALL: ${{ needs.build.outputs.tarball }}
         shell: bash
         run: |
           set -euo pipefail
-          ASSET=".release/asset/$TARBALL"
+          ASSET="registry/$TARBALL"
+          test -f "$ASSET"
           EXPECTED="$(openssl dgst -sha256 -binary "$ASSET" | base64 -w0)"
           if gh release view "$TAG" >/dev/null 2>&1; then
             # An existing release is accepted only when its tag points at this commit and its attached
@@ -139,9 +236,9 @@ jobs:
               echo "tag $TAG points at $TAG_SHA, not at the tested commit $RELEASE_SHA" >&2
               exit 1
             fi
-            mkdir -p .release/existing
-            gh release download "$TAG" --pattern "$TARBALL" --dir .release/existing
-            ACTUAL="$(openssl dgst -sha256 -binary ".release/existing/$TARBALL" | base64 -w0)"
+            mkdir -p existing
+            gh release download "$TAG" --pattern "$TARBALL" --dir existing
+            ACTUAL="$(openssl dgst -sha256 -binary "existing/$TARBALL" | base64 -w0)"
             if [ "$ACTUAL" != "$EXPECTED" ]; then
               echo "release $TAG carries a different $TARBALL than the registry" >&2
               exit 1
@@ -157,7 +254,7 @@ jobs:
             fi
           fi
           PROVENANCE="Published on npm as $NAME@$VERSION. Install with \`npm install -g $NAME\` or run \`npx $NAME --help\`. The attached tarball is the registry copy, verified against its integrity hash. Built from commit $RELEASE_SHA after CI passed on Node.js 22, 24 and 26 on Windows and Ubuntu."
-          NOTES="$(cat .release/notes.md)"$'\n\n'"$PROVENANCE"
+          NOTES="$(cat release-pack/notes.md)"$'\n\n'"$PROVENANCE"
           gh release create "$TAG" "$ASSET" --target "$RELEASE_SHA" --title "$TAG" --notes "$NOTES"
           TAG_SHA="$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)"
           if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then
