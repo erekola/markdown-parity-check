@@ -181,7 +181,7 @@ jobs:
             # Authentication is OIDC trusted publishing only; no token is configured. The very first
             # version of a package is published by the maintainer, because a trusted publisher can only
             # be configured on an existing package.
-            npm publish "release-pack/$TARBALL" --access public
+            npm publish "./release-pack/$TARBALL" --access public
             # npm may answer 404 for a few minutes while it processes the new version (the 0.2.0 run
             # failed on that). Only that delay and temporary registry statuses are waited out, at most
             # 20 attempts 15 s apart; a mismatch or any other error still stops the release at once.

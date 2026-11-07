@@ -271,6 +271,13 @@ describe('release workflow', () => {
     assert.equal((step.match(/npm publish /g) ?? []).length, 1);
     assert.match(step, /if \[ "\$CHECK" -eq 10 \]; then\s+(?:#[^\n]*\n\s+)*npm publish /);
   });
+  it('hands npm publish a path that starts with ./ or /, because npm reads name/file.tgz as a GitHub shorthand and tries a git clone', () => {
+    const yml = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
+    const code = yml.split('\n').filter((l) => !l.trimStart().startsWith('#')).join('\n');
+    const args = [...code.matchAll(/npm publish +("?)([^\s"]+)/g)].map((m) => m[2]!);
+    assert.ok(args.length >= 1);
+    for (const a of args) assert.match(a, /^(\.\/|\/)/, 'npm publish argument ' + a);
+  });
 });
 
 // Round 24, P2-7: the permission that lets npm trusted publishing issue a token belongs to a job with no checkout, no install
