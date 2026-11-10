@@ -2,6 +2,14 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.36 (2026-11-10)
+
+This release does not change which page pairs pass, and a report now names version 0.2.36. It changes the error report that the command prints for an argument error under `--format json`, and corrects one README sentence and one test comment.
+
+- Argument errors under `--format json`: the error report always recorded `mode` as `offline`, `summary.strict` as `false` and both source kinds as `file`, also when the command line gave `--url` or `--strict`. The report now takes `mode` from the presence of `--url` and `summary.strict` from the presence of `--strict`, with the source kinds following the mode. A command line that gives neither, or only `--markdown-url`, is still recorded as `offline` and not strict. The shape of the report is unchanged. The README says how the two fields are read.
+- README: the sentence on decoding says that the decoder follows the Content-Type of the response. The byte order mark and the meta declaration are read only for a response typed `text/html` or `application/xhtml+xml`, and any other response is decoded by the charset of its header or as UTF-8. The code is unchanged.
+- Tests: the plain-loop reference of the link pairing test strips the same characters as the code does (U+0000 to U+0020) instead of everything `String.prototype.trim` strips, and its link shapes now include a no-break space. Three new cases cover an argument error with `--url`, with `--strict` and with neither. Comments and test names no longer cite decision numbers that only the maintainer can see.
+
 ## 0.2.35 (2026-11-07)
 
 This release does not change which page pairs pass, and a report now names version 0.2.35. It corrects documentation that promised more than the library exports, adds tests that read the README, removes a dependency entry that nothing imports and moves the npm publishing permission of the release workflow into a job of its own.

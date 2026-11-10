@@ -1,4 +1,4 @@
-// Regressions for the third audit retest of 2026-09-28 (Tek-542):
+// Regressions for the third audit retest of 2026-09-28:
 // a numeric userinfo password must stay masked in
 // NUMBER_CHANGED (P-N1), a parenthesized userinfo longer than the old regex bound must still be masked
 // fail-closed (P-N2), a --timeout-ms value broken by a raw space must be masked in full (P-N3), --timeout-ms

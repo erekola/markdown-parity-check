@@ -11,10 +11,21 @@ import { diffNumbers, pairLinks } from '../src/compare.js';
 import type { Link } from '../src/model.js';
 import { looseNormalize, relativeHrefRelation } from '../src/normalize.js';
 
+// Strips only U+0000 to U+0020 from both ends, the rule of trimHref in src/normalize.ts (MP-16), written here as an
+// independent plain loop. String.prototype.trim would also strip the no-break space and the other Unicode spaces,
+// which the URL parser keeps as part of the address.
+function trimLow(href: string): string {
+  let start = 0;
+  let end = href.length;
+  while (start < end && href.charCodeAt(start) <= 0x20) start++;
+  while (end > start && href.charCodeAt(end - 1) <= 0x20) end--;
+  return href.slice(start, end);
+}
+
 function oldSameTarget(a: Link, b: Link): boolean {
   if (a.resolved !== null && b.resolved !== null) return a.resolved === b.resolved;
   if (a.resolved === null && b.resolved === null) return relativeHrefRelation(a.rawHref, b.rawHref) === 'same';
-  return a.rawHref.trim() === b.rawHref.trim();
+  return trimLow(a.rawHref) === trimLow(b.rawHref);
 }
 
 function oldPairLinks(hLinks: Link[], mLinks: Link[]) {
@@ -111,6 +122,9 @@ const SHAPES: Array<Omit<Link, 'text'>> = [
   { rawHref: 'https://e.test/x', resolved: 'https://e.test/x' },
   { rawHref: '/x', resolved: null },
   { rawHref: ' /x', resolved: null },
+  // A no-break space is part of the address, so these two never pair with '/x' by trimmed text (MP-16).
+  { rawHref: String.fromCharCode(0xa0) + '/x', resolved: null },
+  { rawHref: String.fromCharCode(0xa0) + '/x', resolved: 'https://e.test/x' },
   { rawHref: './a', resolved: null },
   { rawHref: 'a', resolved: null },
   { rawHref: '../a', resolved: null },

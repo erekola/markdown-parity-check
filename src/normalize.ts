@@ -529,7 +529,7 @@ export function maskHref(href: string): string {
     const u = new URL(href);
     u.username = '';
     u.password = '';
-    // One pass (Tek-560 in the hosted validator): a Set keeps the first-seen key order and merges duplicates, and the
+    // One pass: a Set keeps the first-seen key order and merges duplicates, and the
     // masked query is built once with append. Calling searchParams.set for each key re-serializes the whole query
     // every time, which is quadratic in the number of keys (5 000 keys took 2.1 s, 20 000 took 35 s). An empty
     // query is left as it is, so "?" stays "?".

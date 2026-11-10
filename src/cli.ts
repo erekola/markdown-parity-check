@@ -72,6 +72,24 @@ function rawWantsJson(argv: string[]): boolean {
   return wants;
 }
 
+/**
+ * What the invocation asked for, read from the raw argv for the same reason as rawWantsJson: an argument error is
+ * thrown before parseCliArgs has produced a validated CliArgs. URL mode is the presence of --url, as in the normal
+ * path (`args.url !== undefined`), and strict is the presence of --strict. Both are read until a bare `--`, after
+ * which every token is a positional argument. An invocation that gives neither stays offline and not strict, which
+ * is the only answer the arguments leave open (for example --markdown-url without --url).
+ */
+function rawInvocation(argv: string[]): { mode: 'url' | 'offline'; strict: boolean } {
+  let mode: 'url' | 'offline' = 'offline';
+  let strict = false;
+  for (const a of argv) {
+    if (a === '--') break;
+    if (a === '--url' || a.startsWith('--url=')) mode = 'url';
+    else if (a === '--strict') strict = true;
+  }
+  return { mode, strict };
+}
+
 export interface CliArgs {
   htmlProfile: 'generic' | 'starlight';
   url?: string;
@@ -328,8 +346,9 @@ export async function main(argv: string[], io: CliIo = { stdout: (s) => process.
     // stdout carries the report on top of, not instead of, the plain-text stderr line every
     // argument error writes, since --output cannot be trusted without validated args and callers
     // already rely on the stderr line regardless of format (test/review-0212.test.ts, test/secrets.test.ts).
+    // The report records the mode and strictness the arguments asked for where they say so (rawInvocation).
     if (rawWantsJson(argv)) {
-      const report = errorReport({ strict: false, mode: 'offline' }, null, null, message);
+      const report = errorReport(rawInvocation(argv), null, null, message);
       io.stdout(renderJson(report));
     }
     io.stderr(`Error: ${message}\n`);

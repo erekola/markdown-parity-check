@@ -78,10 +78,10 @@ A value that is outside these ranges, or that is not a plain run of digits, stop
 
 ### Example output
 
-This is the text report for the matching fixture pair in this repository, run with version 0.2.35 on 2026-11-07. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
+This is the text report for the matching fixture pair in this repository, run with version 0.2.36 on 2026-11-10. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
 
 ```text
-markdown-parity-check 0.2.35 (offline mode)
+markdown-parity-check 0.2.36 (offline mode)
 Result: PASS (0 error(s), 0 warning(s), 1 info)
 
 HTML:     test/fixtures/same/page.html (file, 1,017 bytes, base https://example.com/page)
@@ -137,7 +137,7 @@ A `<br>` in a code block is a line break. A code block that differs only in whit
 
 In URL mode the Markdown response is checked first. An HTTP error or an HTML page in place of Markdown fails the check, and nothing is compared. A Markdown response labelled `text/plain` is a warning, and any other content type than `text/markdown` or `text/x-markdown` is an error. A comment, an XML declaration or another declaration before the doctype does not hide an HTML page from this check. If the HTML request itself returns an HTTP error, the run ends with exit code 2.
 
-An HTML response is decoded by its byte order mark first, then by the charset of its Content-Type header, then by a meta charset declaration in its first 1024 bytes, and as UTF-8 when none of them names a known encoding. A Markdown response is decoded by the charset of its header, or as UTF-8.
+A response whose Content-Type header names `text/html` or `application/xhtml+xml` is decoded by its byte order mark first, then by the charset of that header, then by a meta charset declaration in its first 1024 bytes, and as UTF-8 when none of them names a known encoding. The choice follows the type of the response, not the request: any other response, including an HTML page sent with another type or with no Content-Type header, is decoded by the charset of its header or as UTF-8, and its byte order mark and meta declaration do not choose the encoding. A Markdown response is decoded that way too.
 
 ### Limits of the method
 
@@ -222,6 +222,8 @@ The JSON report is the `Report` type. Its top-level fields are:
 | `findings` | A list of `Finding` objects, each with `code`, `severity`, `direction` and `message`, and where they apply the `html` and `markdown` locations and the `before` and `after` text. |
 | `limitations` | The fixed list of what the check does not cover. |
 
+An error report for an argument error is built before the arguments are validated, so the command takes `mode` from the presence of `--url` and `summary.strict` from the presence of `--strict` in the command line. A command line with neither is recorded as `offline` and not strict, and so is one that gives `--markdown-url` without `--url`.
+
 ## Development
 
 The sources are TypeScript under `src/`, compiled with `tsc` to `dist/`. Clone the repository, build it and run the bundled example:
@@ -249,10 +251,10 @@ Only after that check does it create the GitHub release with the verified tarbal
 GitHub Actions publishes every version from 0.1.2 on with npm trusted publishing, and each one carries a provenance attestation. To check one, install it in an empty directory and ask npm to verify the signatures. Replace the version with the one you want to check.
 
 ```sh
-mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.35 --ignore-scripts && npm audit signatures
+mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.36 --ignore-scripts && npm audit signatures
 ```
 
-`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance. Tag `v0.2.35` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.35 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
+`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance. Tag `v0.2.36` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.36 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
 
 ## Security
 

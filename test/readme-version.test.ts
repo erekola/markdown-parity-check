@@ -1,6 +1,6 @@
 // The README's release check and install pin name a version. Each one must be the version in
 // package.json, because a version bump once left half of them behind and the instruction then asked
-// a reader to compare the wrong tag (Tek-564, outside re-check W36 to W44). The test also demands at
+// a reader to compare the wrong tag (found by an outside re-check). The test also demands at
 // least one mention of each form, so it cannot pass on an empty match.
 
 import assert from 'node:assert/strict';

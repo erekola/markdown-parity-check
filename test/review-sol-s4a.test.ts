@@ -118,7 +118,7 @@ describe('MP-08: a visible raw anchor around Markdown blocks gives them its link
   it('MP-08 a plain Markdown link against the HTML anchor paragraph (control)', () => {
     passes(check('<p><a href="/doc">Guide</a></p>', '[Guide](/doc)'));
   });
-  it('MP-08 a span card in an anchor (Tek-488, control)', () => {
+  it('MP-08 a span card in an anchor (control)', () => {
     passes(check('<a href="/doc"><span>Guide</span> <span>Body</span></a>', '[Guide Body](/doc)'));
   });
   it('MP-08 a different href is a changed target', () => {

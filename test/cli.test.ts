@@ -60,6 +60,36 @@ describe('argument validation', () => {
     const last = cli(['--url', 'https://', '--format', 'text', '--format', 'json']);
     assert.doesNotThrow(() => JSON.parse(last.out));
   });
+  it('an argument error report records the mode and strictness the arguments asked for', () => {
+    const kinds = (r: { sources: { html: { kind: string }; markdown: { kind: string } } }) => [r.sources.html.kind, r.sources.markdown.kind];
+    // URL mode: --url is present, in either spelling, and --strict is absent.
+    const url = JSON.parse(cli(['--url', 'https://', '--format', 'json']).out);
+    assert.equal(url.mode, 'url');
+    assert.equal(url.summary.strict, false);
+    assert.deepEqual(kinds(url), ['url', 'url']);
+    const urlEq = JSON.parse(cli(['--url=https://', '--format=json']).out);
+    assert.equal(urlEq.mode, 'url');
+    // --strict is read from the arguments, in URL mode and offline.
+    const urlStrict = JSON.parse(cli(['--url', 'https://', '--strict', '--format', 'json']).out);
+    assert.equal(urlStrict.mode, 'url');
+    assert.equal(urlStrict.summary.strict, true);
+    const strict = JSON.parse(cli([...fx('same'), '--strict', '--timeout-ms=0', '--format', 'json']).out);
+    assert.equal(strict.mode, 'offline');
+    assert.equal(strict.summary.strict, true);
+    assert.deepEqual(kinds(strict), ['file', 'file']);
+    // Neither: offline, not strict, file sources.
+    const neither = JSON.parse(cli(['--format', 'json']).out);
+    assert.equal(neither.mode, 'offline');
+    assert.equal(neither.summary.strict, false);
+    assert.deepEqual(kinds(neither), ['file', 'file']);
+    // Tokens after a bare -- are positional arguments, not options.
+    const after = JSON.parse(cli([...fx('same'), '--format', 'json', '--', '--url', '--strict']).out);
+    assert.equal(after.mode, 'offline');
+    assert.equal(after.summary.strict, false);
+    // The report keeps its shape: the same top-level and summary keys as any other error report.
+    assert.deepEqual(Object.keys(url).sort(), ['extraction', 'findings', 'generatedAt', 'limitations', 'mode', 'schemaVersion', 'sources', 'summary', 'toolVersion']);
+    assert.deepEqual(Object.keys(url.summary).sort(), ['coverage', 'errors', 'error', 'exitCode', 'infos', 'result', 'strict', 'warnings'].sort());
+  });
   it('an argument error without --format json stays plain text (M-01)', () => {
     const r = cli(['--url', 'https://']);
     assert.equal(r.code, 2);
