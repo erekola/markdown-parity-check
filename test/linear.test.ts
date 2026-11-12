@@ -124,14 +124,31 @@ describe('linear-time redaction and address parsing (0.2.2)', () => {
     assert.equal(out, 'Start [2J hidden terminal control');
   });
 
+  // 0.2.37: the new code also rejects a zero-length "::" fill and a group that is not one to four hexadecimal digits,
+  // which the reference accepted (parseInt read a valid prefix). Wherever the two differ, the input must have one of
+  // those shapes, so every other answer is still the same as before.
+  const sameOrRejected = (ip: string): void => {
+    const now = expandIPv6(ip);
+    const before = oldExpandIPv6(ip);
+    if (now === null && before !== null) {
+      const groups = ip.toLowerCase().split('%')[0]!.split(':').filter((g) => g !== '');
+      const bad = groups.some((g, i) => !(/^[0-9a-f]{1,4}$/.test(g) || (i === groups.length - 1 && /^\d+\.\d+\.\d+\.\d+$/.test(g))));
+      const quad = /\d+\.\d+\.\d+\.\d+$/.test(ip.toLowerCase().split('%')[0]!) ? 1 : 0;
+      const emptyFill = ip.includes('::') && groups.length + quad >= 8;
+      assert.ok(bad || emptyFill, `rejected a valid-looking address: ${JSON.stringify(ip)}`);
+    } else {
+      assert.deepEqual(now, before, JSON.stringify(ip));
+    }
+  };
+
   it('expandIPv6 gives the same result as the old expression on random input', () => {
     const next = prng(3600281);
     for (let i = 0; i < 20000; i++) {
       const ip = randomText(next, IP_PIECES, 12);
-      assert.deepEqual(expandIPv6(ip), oldExpandIPv6(ip), JSON.stringify(ip));
+      sameOrRejected(ip);
     }
     for (const ip of ['::ffff:127.0.0.1', '::ffff:1.2.3.4.5', '1..2.3.4', '::1.2.3.4.', '64:ff9b::192.0.2.1', '2001:db8::1%eth0']) {
-      assert.deepEqual(expandIPv6(ip), oldExpandIPv6(ip), ip);
+      sameOrRejected(ip);
     }
   });
 
@@ -189,7 +206,16 @@ function oldNextParenUserinfo(text: string, from: number): OldParenMatch | null 
     const nameWindow = text.slice(nameStart, nameWindowEnd);
     const close = nameWindow.indexOf(')');
     const stop = nameWindow.search(/[\s(]/);
-    if (close < 0 || (stop >= 0 && stop < close) || nameWindow[close + 1] !== ':') {
+    if (close < 0 && stop < 0 && nameWindowEnd - nameStart === OLD_SCAN) {
+      // 0.2.37: a name that fills the window without a terminator is masked fail-closed, the reference carries it.
+      const stopRe = /[@\s<>"']/g;
+      stopRe.lastIndex = nameWindowEnd;
+      const tailMatch = stopRe.exec(text);
+      const atTail = tailMatch !== null && tailMatch[0] === '@';
+      const tailSecretEnd = tailMatch === null ? text.length : tailMatch.index;
+      return { start: m.index, nameStart, secretEnd: tailSecretEnd, end: atTail ? tailSecretEnd + 1 : tailSecretEnd };
+    }
+    if (close < 0 || (stop >= 0 && stop < close) || text[nameStart + close + 1] !== ':') {
       re.lastIndex = nameStart;
       continue;
     }

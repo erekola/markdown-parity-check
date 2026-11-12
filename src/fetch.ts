@@ -125,13 +125,60 @@ function headerCharset(contentType: string | null): string | null {
  * UTF-16. */
 function metaCharset(buf: Buffer): string | null {
   const head = buf.subarray(0, 1024).toString('latin1').replace(/<!--[\s\S]*?(?:-->|$)/g, '');
-  for (const tag of head.matchAll(/<meta\b[^>]*>?/gi)) {
-    const m = /charset\s*=\s*["']?\s*([^\s"'>;/]+)/i.exec(tag[0]);
-    if (!m) continue;
-    const label = m[1]!.toLowerCase();
-    if (decoderFor(label)) return label.startsWith('utf-16') ? 'utf-8' : label;
+  const start = /<meta(?=[\s/>])/gi;
+  for (let s = start.exec(head); s !== null; s = start.exec(head)) {
+    const { attrs, end } = metaAttributes(head, s.index + s[0].length);
+    start.lastIndex = end;
+    let label: string | null = null;
+    const direct = attrs.get('charset');
+    if (direct !== undefined) label = direct.trim().toLowerCase();
+    else if (attrs.get('http-equiv')?.trim().toLowerCase() === 'content-type') {
+      const m = /charset\s*=\s*["']?\s*([^\s"'>;/]+)/i.exec(attrs.get('content') ?? '');
+      if (m) label = m[1]!.toLowerCase();
+    }
+    if (label && decoderFor(label)) return label.startsWith('utf-16') ? 'utf-8' : label;
   }
   return null;
+}
+
+/** The attributes of one meta start tag, read the way the HTML standard's prescan reads them: a tag ends at a ">" that
+ * is outside quotes, a name is matched exactly (so data-charset is not charset), and the first occurrence of a name
+ * wins. A value whose closing quote is missing is dropped. `from` is the position right after "<meta". */
+function metaAttributes(head: string, from: number): { attrs: Map<string, string>; end: number } {
+  const attrs = new Map<string, string>();
+  const n = head.length;
+  let i = from;
+  for (;;) {
+    while (i < n && /[\s/]/.test(head[i]!)) i++;
+    if (i >= n) return { attrs, end: n };
+    if (head[i] === '>') return { attrs, end: i + 1 };
+    let name = '';
+    if (head[i] === '=') name += head[i++];
+    while (i < n && !/[\s/>=]/.test(head[i]!)) name += head[i++];
+    while (i < n && /\s/.test(head[i]!)) i++;
+    let value = '';
+    let complete = true;
+    if (head[i] === '=') {
+      i++;
+      while (i < n && /\s/.test(head[i]!)) i++;
+      const q = head[i];
+      if (q === '"' || q === "'") {
+        const close = head.indexOf(q, i + 1);
+        if (close < 0) {
+          value = head.slice(i + 1);
+          complete = false;
+          i = n;
+        } else {
+          value = head.slice(i + 1, close);
+          i = close + 1;
+        }
+      } else {
+        while (i < n && !/[\s>]/.test(head[i]!)) value += head[i++];
+      }
+    }
+    const key = name.toLowerCase();
+    if (complete && !attrs.has(key)) attrs.set(key, value);
+  }
 }
 
 /** HTML is decoded the way the HTML standard orders the evidence: a byte order mark, then the charset of the

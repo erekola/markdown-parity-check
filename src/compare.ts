@@ -173,11 +173,6 @@ export function pairLinks(hLinks: Link[], mLinks: Link[], maxWork = Number.POSIT
     if (list) list.push(i);
     else looseLists.set(k, [i]);
   });
-  const looseMissing = new Map<string, number>();
-  for (const hi of missing) {
-    const k = looseNormalize(hLinks[hi]!.text);
-    if (k !== '') looseMissing.set(k, (looseMissing.get(k) ?? 0) + 1);
-  }
   const looseHeads = new Map<string, number>();
   const stillMissing: number[] = [];
   for (const hi of missing) {

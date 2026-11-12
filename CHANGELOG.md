@@ -2,6 +2,17 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.37 (2026-11-12)
+
+This release changes which page pairs pass in one narrow case, the Markdown front matter of a document with CR-only line breaks under `--front-matter strip`, and a report names version 0.2.37. The other changes are in redaction, charset detection, the address policy and the command line.
+
+- Redaction: a parenthesized user name longer than 4096 characters, as in `https://(<5000 characters>):SECRET@host`, left the secret unmasked, because the closing parenthesis was outside the scan window and the shape was skipped. When the window ends without a closing parenthesis and without a stopping character, the text from the opening parenthesis through the next `@` (or the end of the token) is now masked. A name of exactly 4095 characters, whose closing parenthesis was the last character of the window, also left the secret unmasked, because the colon after it was outside the window. Names of normal length are masked as before.
+- Charset detection: the meta declaration of an HTML page is read the way the HTML standard's prescan reads it. A tag ends at a `>` outside quotes, so a `>` inside an attribute value no longer cuts the tag short. A `charset` attribute counts only under that exact name, so `data-charset` is ignored. A `charset=` inside a `content` attribute counts only when the tag has an `http-equiv` attribute equal to `content-type`.
+- Address policy: an IPv6 address with eight groups next to `::` (for example `1:2:3:4:5:6:7:8::`) and an address with a group that is not one to four hexadecimal digits (for example `2001:4860::1g`) are no longer parsed as addresses, and the policy refuses them. A group is matched in full, not by its numeric prefix.
+- Front matter: with `--front-matter strip`, a document whose lines end in a lone CR kept its front matter, because only LF and CRLF ended the fence lines. A lone CR (one not followed by LF) now ends a fence line as well, a CRLF pair stays one line break, and the stripped line count follows.
+- Command line: reading `--format json` from the raw arguments, used for an argument error, now stops at a bare `--`, as the reading of `--url` and `--strict` already does.
+- Internal: an unused map in the link comparison was removed. It was filled and never read.
+
 ## 0.2.36 (2026-11-10)
 
 This release does not change which page pairs pass, and a report now names version 0.2.36. It changes the error report that the command prints for an argument error under `--format json`, and corrects one README sentence and one test comment.

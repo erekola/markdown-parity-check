@@ -65,7 +65,7 @@ function rawWantsJson(argv: string[]): boolean {
   let wants = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === undefined) continue;
+    if (a === undefined || a === '--') break;
     if (a === '--format') wants = argv[i + 1] === 'json';
     else if (a.startsWith('--format=')) wants = a.slice('--format='.length) === 'json';
   }

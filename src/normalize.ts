@@ -361,7 +361,19 @@ function nextParenUserinfo(text: string, from: number): ParenUserinfoMatch | nul
     const nameWindow = text.slice(nameStart, nameWindowEnd);
     const close = nameWindow.indexOf(')');
     const stop = nameWindow.search(/[\s(]/);
-    if (close < 0 || (stop >= 0 && stop < close) || nameWindow[close + 1] !== ':') {
+    if (close < 0 && stop < 0 && nameWindowEnd - nameStart === PAREN_USERINFO_SCAN) {
+      // The name is longer than the window and has no ")" and no stopping character in it, so its end cannot be
+      // found. A secret may follow it, so this is masked fail-closed too: from the "(" through the next "@", or
+      // through the end of the token (the next whitespace, angle bracket or quote, else the end of the text) when
+      // there is no "@". The match is consumed, so the scan stays linear (0.2.37).
+      const stopRe = /[@\s<>"']/g;
+      stopRe.lastIndex = nameWindowEnd;
+      const tailMatch = stopRe.exec(text);
+      const atTail = tailMatch !== null && tailMatch[0] === '@';
+      const secretEnd = tailMatch === null ? text.length : tailMatch.index;
+      return { start: m.index, scheme: m[1]!, nameStart, secretStart: nameWindowEnd, secretEnd, end: atTail ? secretEnd + 1 : secretEnd };
+    }
+    if (close < 0 || (stop >= 0 && stop < close) || text[nameStart + close + 1] !== ':') {
       // No well-formed "):" landmark within the window: this "(" is not the shape we mask, so it is left as it is
       // and the search resumes right after it, not from the start again.
       re.lastIndex = nameStart;

@@ -537,7 +537,7 @@ function visibleText(fragment: string): string {
 }
 
 const YAML_LINE = /^(?:[A-Za-z0-9_.-]+\s*:(?:\s|$)|\s+\S|-\s|#)/;
-const FENCE_RE = /^(?:\ufeff)?---[ \t]*\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/;
+const FENCE_RE = /^(?:\ufeff)?---[ \t]*(?:\r\n|\r(?!\n)|\n)([\s\S]*?)(?:\r\n|\r(?!\n)|\n)(?:---|\.\.\.)[ \t]*(?:\r\n|\r(?!\n)|\n|$)/;
 
 interface FrontMatterScan {
   /** Text handed to the parser. */
@@ -559,10 +559,10 @@ function scanFrontMatter(source: string, mode: 'keep' | 'strip'): FrontMatterSca
   const m = FENCE_RE.exec(source);
   if (!m) return { text: source, skippedLines: 0, looksLikeYaml: false, body: '' };
   const body = m[1] ?? '';
-  const nonEmpty = body.split(/\r?\n/).filter((l) => l.trim() !== '');
+  const nonEmpty = body.split(/\r\n|\r|\n/).filter((l) => l.trim() !== '');
   const looksLikeYaml = nonEmpty.length > 0 && nonEmpty.every((l) => YAML_LINE.test(l));
   if (mode === 'keep') return { text: source, skippedLines: 0, looksLikeYaml, body };
-  const skippedLines = m[0].split(/\r?\n/).length - (m[0].endsWith('\n') ? 1 : 0);
+  const skippedLines = m[0].split(/\r\n|\r|\n/).length - (/[\r\n]$/.test(m[0]) ? 1 : 0);
   return { text: source.slice(m[0].length), skippedLines, looksLikeYaml, body };
 }
 

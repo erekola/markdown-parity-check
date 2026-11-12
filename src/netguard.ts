@@ -113,10 +113,12 @@ export function expandIPv6(ip: string): number[] | null {
   const head = halves[0] ? halves[0].split(':') : [];
   const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
   const fill = 8 - head.length - tail.length;
-  if (fill < 0 || (halves.length === 1 && fill !== 0)) return null;
-  const groups = [...head, ...Array(fill).fill('0'), ...tail].map((g) => parseInt(g, 16));
-  if (groups.length !== 8 || groups.some((g) => Number.isNaN(g) || g < 0 || g > 0xffff)) return null;
-  return groups;
+  // "::" stands for at least one group of zeros, so a full eight groups next to "::" is not an address.
+  if (fill < 0 || (halves.length === 1 && fill !== 0) || (halves.length === 2 && fill < 1)) return null;
+  const parts = [...head, ...Array(fill).fill('0'), ...tail];
+  // Every group is one to four hexadecimal digits, matched in full; parseInt alone would take a valid prefix.
+  if (parts.length !== 8 || parts.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return null;
+  return parts.map((g) => parseInt(g, 16));
 }
 
 export function isPublicIPv6(ip: string): boolean {
