@@ -2,6 +2,10 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.38 (2026-11-13)
+
+This release changes the README only. Long sentences and paragraphs in it are split so that each rule reads on its own, and no rule, limit or default is changed. The example report in the README is run again with this version. The comparison, the command line and the library are the same as in 0.2.37.
+
 ## 0.2.37 (2026-11-12)
 
 This release changes which page pairs pass in one narrow case, the Markdown front matter of a document with CR-only line breaks under `--front-matter strip`, and a report names version 0.2.37. The other changes are in redaction, charset detection, the address policy and the command line.

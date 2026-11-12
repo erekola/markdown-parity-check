@@ -78,10 +78,10 @@ A value that is outside these ranges, or that is not a plain run of digits, stop
 
 ### Example output
 
-This is the text report for the matching fixture pair in this repository, run with version 0.2.37 on 2026-11-12. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
+This is the text report for the matching fixture pair in this repository, run with version 0.2.38 on 2026-11-13. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
 
 ```text
-markdown-parity-check 0.2.37 (offline mode)
+markdown-parity-check 0.2.38 (offline mode)
 Result: PASS (0 error(s), 0 warning(s), 1 info)
 
 HTML:     test/fixtures/same/page.html (file, 1,017 bytes, base https://example.com/page)
@@ -101,7 +101,7 @@ Findings (1):
 
 Without `--selector`, the tool looks for a visible `main`, then a visible `article`, then a visible `[role=main]`, and uses the first match of the first kind that has one.
 
-- A candidate is visible when neither it nor an ancestor is hidden, in a template or inside one of the left-out subtrees listed below, so an `article` inside a `nav` is not used.
+- A candidate is visible when neither it nor an ancestor is hidden, in a template or inside one of the left-out subtrees listed below. An `article` inside a `nav` is therefore not used.
 - A `form` is the one exception, so a `main` inside a `form` that has no left-out role is still used, however far up the form sits.
 - If none of them exists, the page body is used and the report warns that page chrome may leak in.
 - Two visible elements of the same kind that do not contain one another also give a warning, because only the first is compared.
@@ -110,10 +110,12 @@ Front matter is kept by default and compared as content. If the HTML does not ca
 
 ### Blocks and severities
 
-Headings, paragraphs, list items, tables, code blocks and links are compared block by block. A link that wraps block elements, such as a linked card with a heading and a paragraph, is compared as those blocks: each keeps its own type and heading level and carries the link, and the Markdown side is read the same way, so `## [Title](url)` is a heading with a link. In a table cell the link is read as part of the cell text. Content that is hidden or sits inside a left-out element is left out on both sides, also when the raw HTML wrapper, such as `<div hidden>` or `<nav>`, is opened in one Markdown block and closed in a later one. A table caption counts as a paragraph before the table.
+Headings, paragraphs, list items, tables, code blocks and links are compared block by block. A link that wraps block elements, such as a linked card with a heading and a paragraph, is compared as those blocks. Each keeps its own type and heading level and carries the link. The Markdown side is read the same way, so `## [Title](url)` is a heading with a link. In a table cell the link is read as part of the cell text.
+
+Content that is hidden or sits inside a left-out element is left out on both sides. This also holds when the raw HTML wrapper, such as `<div hidden>` or `<nav>`, is opened in one Markdown block and closed in a later one. A table caption counts as a paragraph before the table.
 
 - Errors: missing and added blocks, a change in text or numbers, a changed table or link, and a list item that shows another number or a different checked or unchecked state.
-- Warnings: a checkbox that is present on one side only, a difference in order, which is also reported for a block that moved and changed only in case, punctuation or typographic characters, and a difference in heading level, case, punctuation, list kind or nesting level. A block that moved and also changed in its words or numbers gets the finding for that change and no order finding. A changed accent mark, vowel sign, symbol or emoji is a change in text and not in punctuation, so it is an error. A swapped symbol is an error also when a reader sees the same meaning, for example an ASCII arrow made of a hyphen and a greater-than sign against an arrow character, or a dropped trademark sign. An invisible variation selector alone is not. Each footnote in the Markdown is a warning, because footnotes are not compared. These are the main cases, and the `code` of each finding names the exact rule. A missing or extra copy of a repeated block is reported as a missing or added block, which is an error.
+- Warnings: a checkbox that is present on one side only, a difference in order and a difference in heading level, case, punctuation, list kind or nesting level. A difference in order is also reported for a block that moved and changed only in case, punctuation or typographic characters. A block that moved and also changed in its words or numbers gets the finding for that change and no order finding. A changed accent mark, vowel sign, symbol or emoji is a change in text and not in punctuation, so it is an error. A swapped symbol is an error also when a reader sees the same meaning. Examples are an ASCII arrow made of a hyphen and a greater-than sign against an arrow character, or a dropped trademark sign. An invisible variation selector alone is not. Each footnote in the Markdown is a warning, because footnotes are not compared. These are the main cases, and the `code` of each finding names the exact rule. A missing or extra copy of a repeated block is reported as a missing or added block, which is an error.
 - Information: each skipped comparison, which does not fail a check, not even with `--strict`.
 
 The cell-by-cell comparison of a table is skipped when one of its cells has a rowspan or colspan above 1, a rowspan of 0, or a value that is empty or does not begin with a number. The number is read from the value's leading digits, so `2abc` counts as 2. A colspan of 0 and a rowspan or colspan of 1 do not trigger it. The links and the caption of such a table are still compared. The numbering of a reversed list is not compared either.
@@ -129,7 +131,9 @@ Some content is left out even when it sits inside the main content, in code bloc
 
 The `starlight` profile keeps an iframe that has a source and a title, as a link. The same list applies to inline raw HTML in the Markdown and to the checkbox of a task list item, which must belong to the item itself.
 
-A left-out tag in a Markdown paragraph, such as a `<button>` or a `<script>`, is skipped through its matching closing tag in the same paragraph. Inside a paragraph, a left-out tag with no closing tag is reported as a warning and its text is compared as visible. A left-out wrapper such as `<nav>` or `<form>` that is opened in its own Markdown block and never closed hides every block after it, the way an unclosed element does in HTML, and a Markdown document left with no content ends with exit code 2. The void tags `input` and `embed` need no closing tag and are skipped on their own. A self-closing `<svg/>` counts as closed by itself, as in HTML, and `<button/>` does not.
+A left-out tag in a Markdown paragraph, such as a `<button>` or a `<script>`, is skipped through its matching closing tag in the same paragraph. Inside a paragraph, a left-out tag with no closing tag is reported as a warning and its text is compared as visible.
+
+A left-out wrapper such as `<nav>` or `<form>` that is opened in its own Markdown block and never closed hides every block after it, the way an unclosed element does in HTML. A Markdown document left with no content ends with exit code 2. The void tags `input` and `embed` need no closing tag and are skipped on their own. A self-closing `<svg/>` counts as closed by itself, as in HTML, and `<button/>` does not.
 
 A `<br>` in a code block is a line break. A code block that differs only in whitespace is a warning, where whitespace means the ASCII whitespace characters and the Unicode space separators such as the no-break space. Any other difference in code, an invisible character such as a soft hyphen included, is an error. An image is compared by its alt text only, not by its address, so two different images with the same alt text compare equal.
 
@@ -137,7 +141,9 @@ A `<br>` in a code block is a line break. A code block that differs only in whit
 
 In URL mode the Markdown response is checked first. An HTTP error or an HTML page in place of Markdown fails the check, and nothing is compared. A Markdown response labelled `text/plain` is a warning, and any other content type than `text/markdown` or `text/x-markdown` is an error. A comment, an XML declaration or another declaration before the doctype does not hide an HTML page from this check. If the HTML request itself returns an HTTP error, the run ends with exit code 2.
 
-A response whose Content-Type header names `text/html` or `application/xhtml+xml` is decoded by its byte order mark first, then by the charset of that header, then by a meta charset declaration in its first 1024 bytes, and as UTF-8 when none of them names a known encoding. The choice follows the type of the response, not the request: any other response, including an HTML page sent with another type or with no Content-Type header, is decoded by the charset of its header or as UTF-8, and its byte order mark and meta declaration do not choose the encoding. A Markdown response is decoded that way too.
+A response whose Content-Type header names `text/html` or `application/xhtml+xml` is decoded by its byte order mark first, then by the charset of that header, then by a meta charset declaration in its first 1024 bytes. It is decoded as UTF-8 when none of them names a known encoding.
+
+The choice follows the type of the response, not the request. Any other response, including an HTML page sent with another type or with no Content-Type header, is decoded by the charset of its header or as UTF-8. Its byte order mark and meta declaration do not choose the encoding. A Markdown response is decoded that way too.
 
 ### Limits of the method
 
@@ -163,7 +169,7 @@ Some limits are not in the table:
 - A host written as an IPv6 literal in brackets is checked against the same address policy as a resolved address and is not looked up in DNS.
 - The tool sends `Accept-Encoding: gzip, deflate, br` and decodes responses with no Content-Encoding, `identity`, `gzip`, `x-gzip`, `deflate` or `br`. A response with any other Content-Encoding, `zstd` for example, is rejected, and the run ends with exit code 2.
 - The command-line tool follows at most 5 redirects.
-- When elements are nested more than 1024 levels deep, in the HTML page, in a raw HTML block written inside the Markdown, across raw elements left open between Markdown blocks, or in the Markdown's own structure, the extraction stops with exit code 2.
+- When elements are nested more than 1024 levels deep, the extraction stops with exit code 2. This holds in the HTML page, in a raw HTML block written inside the Markdown, across raw elements left open between Markdown blocks or in the Markdown's own structure.
 - The matching stops the same way when more than 1 000 000 similar block pairs would have to be considered. The library `limits` default to the same two values for block pairs and similar block pairs. `maxSimilarityWork` has no default bound.
 - The hosted page uses lower nesting and matching limits: 512 levels and 50 000 similar block pairs.
 
@@ -202,7 +208,11 @@ The options type is `RunOptions`. It takes `selector`, `frontMatter`, `strict`, 
 
 When the Markdown source has `kind: 'url'` in its `meta`, the delivery check runs first and reads the HTTP `status` and `contentType` from that `meta`.
 
-A host with a smaller CPU or memory budget can pass lower `limits`, typed as `RunLimits`: `maxAlignmentPairs`, `maxSimilarityCandidates`, `maxSimilarityWork` and `maxNestingDepth`. The nesting limit also applies to raw HTML blocks inside the Markdown. Set `maxSimilarityWork` when the library compares untrusted documents: with the default limits one worst case at the full 4 000 000 block pairs (100 HTML blocks of 870 distinct words against 40 000 Markdown blocks of one word each) took between 26 and 30 seconds in hand timings on development machines, and a value of 2 000 000 made the pairing step stop after about 70 milliseconds, on top of the parse time. The test suite runs the bounded case and asserts no time. When a limit is exceeded, `run` throws a `RunError` whose message names the limit, and the command line reports it with exit code 2.
+A host with a smaller CPU or memory budget can pass lower `limits`, typed as `RunLimits`: `maxAlignmentPairs`, `maxSimilarityCandidates`, `maxSimilarityWork` and `maxNestingDepth`. The nesting limit also applies to raw HTML blocks inside the Markdown.
+
+Set `maxSimilarityWork` when the library compares untrusted documents. With the default limits one worst case at the full 4 000 000 block pairs (100 HTML blocks of 870 distinct words against 40 000 Markdown blocks of one word each) took between 26 and 30 seconds in hand timings on development machines. In the same case, a value of 2 000 000 made the pairing step stop after about 70 milliseconds, on top of the parse time.
+
+The test suite runs the bounded case and asserts no time. When a limit is exceeded, `run` throws a `RunError` whose message names the limit, and the command line reports it with exit code 2.
 
 The caller fetches the pages and decides which addresses are allowed. The address policy the command applies is exported as `assertPublicHost` and `isPublicAddress`.
 
@@ -222,7 +232,7 @@ The JSON report is the `Report` type. Its top-level fields are:
 | `findings` | A list of `Finding` objects, each with `code`, `severity`, `direction` and `message`, and where they apply the `html` and `markdown` locations and the `before` and `after` text. |
 | `limitations` | The fixed list of what the check does not cover. |
 
-An error report for an argument error is built before the arguments are validated, so the command takes `mode` from the presence of `--url` and `summary.strict` from the presence of `--strict` in the command line. A command line with neither is recorded as `offline` and not strict, and so is one that gives `--markdown-url` without `--url`.
+An error report for an argument error is built before the arguments are validated. The command therefore takes `mode` from the presence of `--url` and `summary.strict` from the presence of `--strict` in the command line. A command line with neither is recorded as `offline` and not strict, and so is one that gives `--markdown-url` without `--url`.
 
 ## Development
 
@@ -251,10 +261,12 @@ Only after that check does it create the GitHub release with the verified tarbal
 GitHub Actions publishes every version from 0.1.2 on with npm trusted publishing, and each one carries a provenance attestation. To check one, install it in an empty directory and ask npm to verify the signatures. Replace the version with the one you want to check.
 
 ```sh
-mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.37 --ignore-scripts && npm audit signatures
+mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.38 --ignore-scripts && npm audit signatures
 ```
 
-`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance. Tag `v0.2.37` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.37 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
+`npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance.
+
+Tag `v0.2.38` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.38 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
 
 ## Security
 
