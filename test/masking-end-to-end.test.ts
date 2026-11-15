@@ -151,7 +151,7 @@ describe('ordinary content is not hidden by the masking', () => {
       const out = reports(html, md);
       assert.ok(out.includes('ops@example.org'), 'the first address is hidden');
       assert.ok(out.includes('sales@example.org'), 'the second address is hidden');
-      assert.ok(out.includes('https://api.example.com:8443'), 'the address with its port is hidden');
+      assert.match(out, /https:\/\/api\.example\.com:8443/, 'the address with its port is hidden');
     }
     showsBoth((v) => `Open http://localhost:3000 then email ${v}@example.org.`, 'dev', 'ops');
     showsBoth((v) => `https://example.com:443 uses TLS, ask ${v}@example.org about it.`, 'me', 'you');
