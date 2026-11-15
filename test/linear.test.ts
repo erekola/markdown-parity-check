@@ -6,12 +6,15 @@
 // carries it as its last branch. 0.2.12 lets a URL go on past ( ) " and ' to the end of its token and gives back
 // closing punctuation the sentence owns; the reference carries that as the [^\s<>]* after the alternatives and as
 // the trim loop in oldRedactText, and a special scheme with user information behind any number of separators as the
-// last branch of the expression.
+// last branch of the expression. 0.2.40 adds the pass for user:secret@host.example/path without a scheme separator
+// in front of the run-based masking, and oldRedactText applies the same function (maskBareUserinfo) there, as it
+// applies maskParenUserinfo: the reference is for the run-based masking, and the pass has tests of its own in
+// review-1115.test.ts.
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { expandIPv6, isPublicIPv6 } from '../src/netguard.js';
-import { excerpt, insideHiddenUrlPart, insideParenUserinfo, maskHref, maskParenUserinfo, redactText, stripControlChars } from '../src/normalize.js';
+import { excerpt, insideHiddenUrlPart, insideParenUserinfo, maskBareUserinfo, maskHref, maskParenUserinfo, redactText, stripControlChars } from '../src/normalize.js';
 
 const OLD_URL_IN_TEXT = /(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"'()]+|www\.[^\s<>"'()]+|(?<![\w/])\/[^\s<>"'()]*[?#][^\s<>"'()]*|[^\s<>"'()]*\?[\w%.-]+=[^\s<>"'()]*|[\/\\]{2}[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*|(?:https?|ftp|wss?|file):[\/\\]*[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*|(?<![\w.-])(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:[a-z0-9_-]+\.)+(?:[a-z]{2,}|xn--[a-z0-9-]+))(?::\d+)?(?:[\/\\]|#(?=[^\s<>"'()]*=))[^\s<>"'()]*)/giu;
 
@@ -61,7 +64,7 @@ function oldMaskUrl(url: string): string {
 const OLD_URL_IN_TOKEN = new RegExp(`(?:${OLD_URL_IN_TEXT.source})[^\\s<>]*`, 'giu');
 
 function oldRedactText(text: string): string {
-  const pre = oldMaskAuthority(maskParenUserinfo(stripControlChars(text)));
+  const pre = maskBareUserinfo(oldMaskAuthority(maskParenUserinfo(stripControlChars(text))));
   const out = pre.replace(OLD_URL_IN_TOKEN, (m) => {
     const open = (m.match(/\(/g) ?? []).length;
     let close = (m.match(/\)/g) ?? []).length;

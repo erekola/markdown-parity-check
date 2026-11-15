@@ -78,10 +78,10 @@ A value that is outside these ranges, or that is not a plain run of digits, stop
 
 ### Example output
 
-This is the text report for the matching fixture pair in this repository, run with version 0.2.39 on 2026-11-14. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
+This is the text report for the matching fixture pair in this repository, run with version 0.2.40 on 2026-11-15. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
 
 ```text
-markdown-parity-check 0.2.39 (offline mode)
+markdown-parity-check 0.2.40 (offline mode)
 Result: PASS (0 error(s), 0 warning(s), 1 info)
 
 HTML:     test/fixtures/same/page.html (file, 1,017 bytes, base https://example.com/page)
@@ -151,7 +151,7 @@ The choice follows the type of the response, not the request. Any other response
 
 JavaScript is not executed. Content that a page builds in the browser is compared as the server sent it. Block matching is heuristic, so some layouts need an explicit selector. Reports mask URL query values and fragments and remove the user name and password of an address with a scheme, such as `https://user:password@host/`. Excerpts may still contain private page content. Review a report before you share it.
 
-The masking is a display safeguard that does not hide ordinary text, so it has limits, and this paragraph is the full list. It removes the user name and password even when a tab, a line break or a space sits inside the user information, provided that the user information holds a colon, as in `user:password`. A user name alone, with no colon, is masked when a tab, a vertical tab or a form feed sits inside it, and is shown when a space, a no-break space, a line feed or a carriage return does, because a line break or a space between an address and an e-mail address is ordinary text. On a bare host name without a scheme, a query or a fragment is masked only when it holds an equals sign, so an anchor such as `example.com/docs/guide#step-3` and a path segment are shown. Not masked: a bracketed IPv6 host, a host with a trailing dot, a name with no dot other than `localhost`, an scp-style `git@host:path` and a scheme-less `user:password@host`. A plain space or a no-break space right after the colon of the user information, and a password of digits only that is followed by white space, are read as text and shown. The masking changes what a report shows and never what is compared, and a number difference inside a masked part still gives the number finding, with the values left out. In both formats U+200E, U+200F, U+061C, U+2028, U+2029 and the tag characters are removed from report text. The text report shows a line feed or a carriage return inside a string from a page or an argument as `\n` or `\r`.
+The masking is a display safeguard that does not hide ordinary text, so it has limits, and this paragraph is the full list. It removes the user name and password even when a tab, a line break or a space sits inside the user information, provided that the user information holds a colon, as in `user:password`. A user name alone, with no colon, is masked when a tab, a vertical tab or a form feed sits inside it, and is shown when a space, a no-break space, a line feed or a carriage return does, because a line break or a space between an address and an e-mail address is ordinary text. On a bare host name without a scheme, a query or a fragment is masked only when it holds an equals sign, so an anchor such as `example.com/docs/guide#step-3` and a path segment are shown. Not masked: a bracketed IPv6 host, a host with a trailing dot, a name with no dot other than `localhost` and an scp-style `git@host:path`. A scheme-less `user:password@host.example/path` is masked as `user:***@host.example/path`, and so is the e-mail link that the Markdown parser reads out of it, when a path, a query that holds a value or a fragment that holds an equals sign follows the host name. Without one, as in `user:password@host.example` or `Contact:jane@example.com`, it is shown, because text alone cannot tell a user name from a label. The scheme-less form is also shown when its host name holds a letter outside ASCII, or when its colon or at sign is written as a character reference or a fullwidth character. An address after `mailto:`, `xmpp:`, `sip:`, `sips:`, `acct:` or `im:` is shown as written. A plain space or a no-break space right after the colon of the user information, and a password of digits only that is followed by white space, are read as text and shown. The masking changes what a report shows and never what is compared, and a number difference inside a masked part still gives the number finding, with the values left out. In both formats U+200E, U+200F, U+061C, U+2028, U+2029 and the tag characters are removed from report text. The text report shows a line feed or a carriage return inside a string from a page or an argument as `\n` or `\r`.
 
 A link target longer than 8192 characters stops the run with exit code 2 and an error that names the limit and does not repeat the target. The comparison handles a target once for every link, block or reference that touches it, so the time grew with the length of the target times that count. The limit applies to the target as the page or the Markdown wrote it, before any resolution.
 
@@ -272,12 +272,12 @@ Only after that check does it create the GitHub release with the verified tarbal
 GitHub Actions publishes every version from 0.1.2 on with npm trusted publishing, and each one carries a provenance attestation. To check one, install it in an empty directory and ask npm to verify the signatures. Replace the version with the one you want to check.
 
 ```sh
-mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.39 --ignore-scripts && npm audit signatures
+mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.40 --ignore-scripts && npm audit signatures
 ```
 
 `npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance.
 
-Tag `v0.2.39` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.39 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
+Tag `v0.2.40` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.40 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
 
 ## Security
 

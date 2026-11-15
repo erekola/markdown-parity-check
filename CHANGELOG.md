@@ -2,6 +2,14 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.40 (2026-11-15)
+
+This release changes what a report shows for one shape of text. It moves no set of passing pairs. A finding code, a severity, a direction and an exit code are the same as in 0.2.39 for every input.
+
+- Credential masking: a user name and a secret before an at sign with no scheme separator, as in `user:secret@host.example/path`, reached a report in 0.2.39 and earlier. The URL parser reads `user:` as a scheme and the rest as an opaque path, so it finds no user information, and the Markdown parser reads `secret@host.example` as an e-mail address. The secret then showed in the excerpt, in the text of the link finding and in the target of the link. The shape is now shown as `user:***@host.example/path`, and the link read out of it is shown as `***`. The shape counts when a host name follows the at sign and then a slash, a backslash, a query that holds a value or a fragment that holds an equals sign. It is shown as before when nothing of that kind follows, as in `user:secret@host.example` and `Contact:jane@example.com`, and after `mailto:`, `xmpp:`, `sip:`, `sips:`, `acct:` and `im:`, because text alone cannot tell such a text from a label and an address. The README section "Limits of the method" lists both sides.
+- Comparison: the masking changes what a report shows and never what is compared. The message for an invalid selector does not quote a selector that holds this shape, as it did not quote one that holds a query value.
+- Tests: test/review-1115.test.ts is new. It covers the shape in the excerpt, in the link text and in the link target at seven places of a page, a link target where only a fragment that holds an equals sign follows the host name, ordinary addresses that must stay as they are, and the running time of the scan. Each test that names a secret fails on 0.2.39.
+
 ## 0.2.39 (2026-11-15)
 
 This release changes the outcome for three kinds of input. A link target longer than 8192 characters is a run error with exit code 2. An IPv6 address outside 2000::/3 is refused by the address policy, and the forms that carry an IPv4 address are decided by that IPv4 address as before, so `::ffff:8.8.8.8` and `64:ff9b::8.8.8.8` stay public. The command started without its `.js` extension, as in `node dist/src/cli`, now runs, where it ran no code and exited 0 without a word.

@@ -8,7 +8,7 @@ import type { Block, Extraction, ExtractionIssue, Link, ListInfo } from './model
 import { BLOCK_TAGS, extractHtml, HtmlDepthError, MAX_NESTING_DEPTH, opensExcludedSubtree } from './html.js';
 import { parseDocument, Parser } from 'htmlparser2';
 import { Element, Text, type ChildNode } from 'domhandler';
-import { excerpt, extractNumbers, insideHiddenUrlPart, insideUserinfoSpan, LinkTargetError, looseNormalize, MAX_LINK_TARGET_CHARS, normalizeCode, resolveHref, shownField, shownNormalize, strictNormalize, userinfoSpansOf, type UserinfoSpan } from './normalize.js';
+import { bareUserinfoSpansOf, excerpt, extractNumbers, insideHiddenUrlPart, insideUserinfoSpan, LinkTargetError, looseNormalize, MAX_LINK_TARGET_CHARS, normalizeCode, resolveHref, shownField, shownNormalize, strictNormalize, userinfoSpansOf, type UserinfoSpan } from './normalize.js';
 
 export interface MarkdownExtractOptions {
   baseUrl?: string | null;
@@ -42,6 +42,7 @@ interface Ctx {
   source: string;
   /** The user information found in source, computed when the first literal autolink asks. */
   userinfo?: UserinfoSpan[];
+  bareUserinfo?: UserinfoSpan[];
   blocks: Block[];
   notes: string[];
   issues: ExtractionIssue[];
@@ -270,13 +271,18 @@ function inline(ctx: Ctx, node: PhrasingContent | Nodes, run: InlineRun): void {
       // A GFM literal autolink starts with neither [ nor <. One that GFM found inside a hidden part of another URL
       // is compared as usual but shown masked (0.2.12). So is one that starts inside the user information of an
       // address, scheme included, which GFM cuts at white space: the head of "https://user:pa ss@host/" is a link of
-      // its own, and so is the tail "ss@host" read as an e-mail address.
+      // its own, and so is the tail "ss@host" read as an e-mail address. The same holds for the "secret@host.example"
+      // that GFM reads out of user:secret@host.example/path, which has no scheme separator (0.2.40).
       const at = node.position?.start.offset;
       if (at !== undefined && ctx.source[at] !== '[' && ctx.source[at] !== '<') {
         if (insideHiddenUrlPart(ctx.source, at)) link.masked = true;
         else if (ctx.source.includes('://')) {
           ctx.userinfo ??= userinfoSpansOf(ctx.source);
           if (insideUserinfoSpan(ctx.userinfo, at)) link.masked = true;
+        }
+        if (!link.masked && ctx.source.includes('@')) {
+          ctx.bareUserinfo ??= bareUserinfoSpansOf(ctx.source);
+          if (insideUserinfoSpan(ctx.bareUserinfo, at)) link.masked = true;
         }
       }
       run.links.push(link);

@@ -785,15 +785,139 @@ export function insideUserinfoSpan(spans: UserinfoSpan[], at: number): boolean {
   return false;
 }
 
+// Schemes whose address part is an e-mail address or a user at a host by design. "mailto:jane@example.com/x" and the
+// like are shown as written, so the masking of a name and a secret before an "@" does not reach them.
+const ADDRESS_SCHEMES = new Set(['mailto', 'xmpp', 'sip', 'sips', 'acct', 'im']);
+
+/** Whether t[from, to) is a host name followed by an optional port, by the rule bareHostStart uses: dotted labels that
+ * end in a letters-only label of two or more characters or in an xn-- label, a dotted IPv4 address or localhost. A
+ * trailing dot, an empty label and a name with no dot other than localhost are not hosts. */
+function isBareHostText(t: string, from: number, to: number): boolean {
+  let end = to;
+  let k = to;
+  while (k > from && isDigit(t.charCodeAt(k - 1))) k--;
+  if (k < to && k > from + 1 && t.charCodeAt(k - 1) === 0x3a) end = k - 1;
+  if (end <= from) return false;
+  let labels = 1;
+  let lastStart = from;
+  for (let i = from; i < end; i++) {
+    const c = t.charCodeAt(i);
+    if (c === 0x2e) {
+      if (i === lastStart || i + 1 >= end) return false;
+      labels++;
+      lastStart = i + 1;
+    } else if (!(isLetter(c) || isDigit(c) || c === 0x2d || c === 0x5f)) return false;
+  }
+  const name = t.slice(from, end);
+  if (labels === 1) return name.replace(/\u017f/g, 's').toLowerCase() === 'localhost';
+  const last = t.slice(lastStart, end);
+  if (last.length >= 2 && /^[A-Za-z\u017f\u212a]+$/u.test(last)) return true;
+  if (last.length >= 5 && /^xn--[^_]*$/i.test(last)) return true;
+  return labels === 4 && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(name);
+}
+
+/**
+ * The credential-shaped "label:name@host" of a text that has no scheme separator, as in user:secret@host.example/p
+ * (0.2.40, found by an independent check of 0.2.39). The URL parser reads "user:" as a scheme and the rest as an opaque
+ * path, so maskHref found no user information, and GFM read "secret@host.example" as an e-mail address, so the
+ * secret reached a report as an excerpt and as the text and the target of a link. A span is found in a run (RUN) when
+ * a label, the letters, digits and the characters + . - that start with a letter and follow no scheme character,
+ * is followed by a colon and then by text that holds an "@" before the first slash, backslash, question mark or number
+ * sign, and that delimiter, which must be there, makes the address a URL-like one: a slash or a backslash, a query that
+ * starts with a name and an equals sign, or a number sign with an equals sign later in the run. The text after the
+ * last "@" up to the delimiter must be a host name (isBareHostText). The user information is the text between the
+ * colon and that "@", and it must not be empty.
+ *
+ * Not a span, so shown as written: a special scheme (https:user@host/ is masked by the other rules), a scheme of
+ * ADDRESS_SCHEMES, a label that follows a slash (the authority rules read //name:secret@host/), an address that
+ * no delimiter follows, as in "Contact:jane@example.com", and a question mark or a number sign that is not followed by
+ * a value, as in "Did you mean To:jane@example.com?". "label:jane@example.com" with no space is therefore shown
+ * unless a path, a query value or a fragment value follows, because text alone cannot tell a label from a user name.
+ * A failed candidate is scanned to its own delimiter and a found one to its "@", so the scan stays linear. The result
+ * is a display aid and is never part of a comparison key.
+ */
+export function findBareUserinfoSpans(text: string): UserinfoSpan[] {
+  const spans: UserinfoSpan[] = [];
+  const runs = new RegExp(RUN.source, RUN.flags);
+  for (let run = runs.exec(text); run !== null; run = runs.exec(text)) {
+    const s = run.index;
+    const e = s + run[0].length;
+    if (!run[0].includes('@')) continue;
+    let lastEquals = e - 1;
+    while (lastEquals >= s && text.charCodeAt(lastEquals) !== 0x3d) lastEquals--;
+    let i = s;
+    while (i < e) {
+      if (!isLetter(text.charCodeAt(i)) || (i > s && isSchemeChar(text.charCodeAt(i - 1)))) {
+        i++;
+        continue;
+      }
+      let b = i;
+      while (b < e && isSchemeChar(text.charCodeAt(b))) b++;
+      if (b + 1 >= e || text.charCodeAt(b) !== 0x3a) {
+        i = b;
+        continue;
+      }
+      let k = b + 1;
+      let lastAt = -1;
+      while (k < e) {
+        const c = text.charCodeAt(k);
+        if (c === 0x2f || c === 0x5c || c === 0x3f || c === 0x23) break;
+        if (c === 0x40) lastAt = k;
+        k++;
+      }
+      let ok = k < e && lastAt > b + 1 && isBareHostText(text, lastAt + 1, k);
+      if (ok) {
+        const d = text.charCodeAt(k);
+        if (d === 0x3f) {
+          let q = k + 1;
+          while (q < e && isParamChar(text.charCodeAt(q))) q++;
+          ok = q > k + 1 && q < e && text.charCodeAt(q) === 0x3d;
+        } else if (d === 0x23) ok = lastEquals > k;
+      }
+      if (ok) {
+        const prev = i > s ? text.charCodeAt(i - 1) : -1;
+        ok = prev !== 0x2f && prev !== 0x5c && specialSchemeLength(text, i, e) !== b - i && !ADDRESS_SCHEMES.has(text.slice(i, b).toLowerCase());
+      }
+      if (ok) {
+        spans.push({ start: i, from: b + 1, at: lastAt });
+        i = lastAt + 1;
+      } else i = k;
+    }
+  }
+  return spans;
+}
+
+/** Masks the user information of every "label:name@host/path" that findBareUserinfoSpans finds, and leaves the label,
+ * the host and the rest as they are: user:secret@host.example/p?x=1 reads user:***@host.example/p?x=1. Display only. */
+export function maskBareUserinfo(text: string): string {
+  if (!text.includes('@')) return text;
+  const spans = findBareUserinfoSpans(text);
+  if (spans.length === 0) return text;
+  let out = '';
+  let pos = 0;
+  for (const s of spans) {
+    out += text.slice(pos, s.from) + '***@';
+    pos = s.at + 1;
+  }
+  return out + text.slice(pos);
+}
+
+/** The spans of findBareUserinfoSpans for a source text, with the characters that stripControlChars removes read as
+ * a letter, which keeps every position and does not end a run or a label. */
+export function bareUserinfoSpansOf(text: string): UserinfoSpan[] {
+  return findBareUserinfoSpans(text.replace(CONTROL_CHARS, (m) => 'a'.repeat(m.length)));
+}
+
 /** Masks user information, query values and fragments of every URL-like run in a piece of report text.
  * maskParenUserinfo and maskAuthorityUserinfo run first, for the shapes the runs of RUN cannot see as one URL, and
- * stripControlChars runs last so a raw ANSI escape from a compared page or an argument cannot reach a plain
- * --format text report (0.2.16, found by an outside review 2026-09-28). */
+ * maskBareUserinfo for the name:secret@host shape without a scheme separator. stripControlChars runs last so a raw
+ * ANSI escape from a compared page or an argument cannot reach a plain --format text report (0.2.16, found by an
+ * outside review 2026-09-28). */
 export function redactText(text: string): string {
   // The control characters go first as well as last: a vertical tab, a form feed, U+2028 or U+0085 inside the user
   // information would otherwise end the authority for the masking and be removed afterwards, which left a credential
   // that read as a whole URL.
-  return stripControlChars(rewriteUrlRuns(maskAuthorityUserinfo(maskParenUserinfo(stripControlChars(text)), true), maskHref));
+  return stripControlChars(rewriteUrlRuns(maskBareUserinfo(maskAuthorityUserinfo(maskParenUserinfo(stripControlChars(text)), true)), maskHref));
 }
 
 /**
