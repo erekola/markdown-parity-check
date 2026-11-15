@@ -285,10 +285,12 @@ describe('F10: --output never overwrites an input', () => {
 
 describe('F14: IPv6 blocks the IANA registry marks not globally reachable', () => {
   it('refuses them and keeps the registered exceptions public', () => {
-    for (const ip of ['2001:2::1', '2001:2:0:ffff::1', '3fff::1', '3fff:fff:ffff::1', '5f00::1', '5f00:ffff::1', '100:0:0:1::1', '2001:10::1', '2001:1::4', '2001:5::1', '2001:1ff::1']) {
+    // 5f01::1 and 100:0:0:2::1 were in the public list up to 0.2.38, which refused only the registered blocks. Since 0.2.39
+    // only 2000::/3 is public, so they are refused with the rest of the space outside it (test/review-1114.test.ts).
+    for (const ip of ['2001:2::1', '2001:2:0:ffff::1', '3fff::1', '3fff:fff:ffff::1', '5f00::1', '5f00:ffff::1', '100:0:0:1::1', '2001:10::1', '2001:1::4', '2001:5::1', '2001:1ff::1', '5f01::1', '100:0:0:2::1']) {
       assert.equal(isPublicAddress(ip), false, ip);
     }
-    for (const ip of ['2001:1::1', '2001:1::2', '2001:1::3', '2001:3::1', '2001:4:112::1', '2001:20::1', '2001:3f::1', '2001:200::1', '3fff:1000::1', '5f01::1', '100:0:0:2::1']) {
+    for (const ip of ['2001:1::1', '2001:1::2', '2001:1::3', '2001:3::1', '2001:4:112::1', '2001:20::1', '2001:3f::1', '2001:200::1', '3fff:1000::1']) {
       assert.equal(isPublicAddress(ip), true, ip);
     }
   });

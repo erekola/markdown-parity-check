@@ -5,7 +5,7 @@ import { parseDocument } from 'htmlparser2';
 import { selectAll, selectOne } from 'css-select';
 import { Element, Text, type AnyNode, type ChildNode, type Document, type ParentNode } from 'domhandler';
 import type { Block, Extraction, ExtractionIssue, Link, ListInfo } from './model.js';
-import { extractNumbers, looseNormalize, normalizeCode, resolveHref, strictNormalize } from './normalize.js';
+import { extractNumbers, looseNormalize, normalizeCode, redactText, resolveHref, shownField, shownNormalize, stripControlChars, strictNormalize } from './normalize.js';
 
 export interface HtmlExtractOptions {
   /** Opt-in component semantics. The default keeps generic HTML visibility rules. */
@@ -128,8 +128,19 @@ function segment(ctx: Ctx, el: Element): string {
   return ctx.segments.get(el) ?? el.name;
 }
 
+// The class names of each element, split once. hasClass runs on every ancestor of every block of a Starlight page,
+// and up to 0.2.38 it split the class attribute again at each call, so a page with one element carrying a long class
+// attribute and many pre blocks took time in the product of the two.
+// The tree is not changed after parsing, so the answer for an element stays the same.
+const classSets = new WeakMap<Element, Set<string>>();
+
 function hasClass(el: Element, name: string): boolean {
-  return (el.attribs.class ?? '').split(/\s+/).includes(name);
+  let set = classSets.get(el);
+  if (set === undefined) {
+    set = new Set((el.attribs.class ?? '').split(/\s+/));
+    classSets.set(el, set);
+  }
+  return set.has(name);
 }
 
 function ancestor(el: Element, predicate: (node: Element) => boolean): Element | null {
@@ -239,7 +250,7 @@ function inlineText(ctx: Ctx, node: ChildNode, run: InlineRun): void {
     const inner = newRun();
     for (const child of node.children) inlineText(ctx, child, inner);
     const raw = node.attribs['href'] ?? '';
-    run.links.push({ text: strictNormalize(inner.text), rawHref: raw, resolved: resolveHref(raw, ctx.base) });
+    run.links.push({ text: strictNormalize(inner.text), ...shownField(inner.text), rawHref: raw, resolved: resolveHref(raw, ctx.base) });
     run.links.push(...inner.links);
     run.text += inner.text;
     return;
@@ -263,7 +274,7 @@ function flushRun(ctx: Ctx, run: InlineRun, container: Element, type: 'paragraph
   const text = strictNormalize(run.text);
   if (text === '') return;
   const node = run.firstNode ?? container;
-  pushBlock(ctx, { type, text, links: run.links, ...(type === 'listItem' && list ? { list } : {}) }, node, container);
+  pushBlock(ctx, { type, text, ...shownField(run.text), links: run.links, ...(type === 'listItem' && list ? { list } : {}) }, node, container);
 }
 
 /**
@@ -294,7 +305,7 @@ function walkBlockAnchor(ctx: Ctx, a: Element): void {
   const resolved = resolveHref(rawHref, ctx.base);
   for (let i = start; i < ctx.blocks.length; i++) {
     const block = ctx.blocks[i]!;
-    block.links.unshift({ text: strictNormalize(block.text), rawHref, resolved });
+    block.links.unshift({ text: strictNormalize(block.text), ...(block.shown !== undefined ? { shown: block.shown } : {}), rawHref, resolved });
   }
 }
 
@@ -336,7 +347,7 @@ function handleBlock(ctx: Ctx, el: Element): void {
     const run = newRun();
     for (const c of el.children) inlineText(ctx, c, run);
     const text = strictNormalize(run.text);
-    if (text !== '') pushBlock(ctx, { type: 'heading', text, depth: Number(m[1]), links: run.links }, el, el);
+    if (text !== '') pushBlock(ctx, { type: 'heading', text, ...shownField(run.text), depth: Number(m[1]), links: run.links }, el, el);
     return;
   }
   if (el.name === 'p' || el.name === 'dt' || el.name === 'dd' || el.name === 'figcaption' || el.name === 'summary' || el.name === 'caption' || el.name === 'address') {
@@ -403,7 +414,7 @@ function listInfo(ctx: Ctx, li: Element): ListInfo {
  * The numbers the visible items of a numbered list show, the way a browser's list counter counts them: from the
  * list's start, or from the item count for a reversed list without one, and an item's value attribute sets the
  * number from that item on. One pass per list, kept in ctx; the first version counted again for every item, and
- * a list of 20 000 items took ten seconds (found by an independent review before 0.2.13 was released). A reversed
+ * a list of 20 000 items took seconds (found by an independent review before 0.2.13 was released). A reversed
  * list gives only its first item a number: Markdown has no reversed list and numbers every item from the first,
  * so the later numbers of a faithful Markdown copy can never match.
  */
@@ -663,22 +674,32 @@ function handleTable(ctx: Ctx, table: Element): void {
     ctx.issues.push({ code: 'EXTRACTION_TABLE_SPAN_NOT_COMPARED', severity: 'info', message: 'A table cell carries a rowspan or colspan attribute; a plain row/column reading cannot place its value reliably, so the table body was not compared.', line: lineOf(ctx, table) });
   }
   const cells: string[][] = [];
+  const cellsShown: string[][] = [];
+  let anyShown = false;
   const links: Link[] = [];
   for (const tr of rows) {
     const row: string[] = [];
+    const rowShown: string[] = [];
     for (const cell of tr.children) {
       if (cell instanceof Element && (cell.name === 'td' || cell.name === 'th') && !isSkipped(cell, ctx.root, ctx.profile)) {
         const run = newRun();
         for (const c of cell.children) inlineText(ctx, c, run);
         row.push(strictNormalize(run.text));
+        const shownCell = shownNormalize(run.text);
+        if (shownCell !== undefined) anyShown = true;
+        rowShown.push(shownCell ?? row[row.length - 1]!);
         links.push(...run.links);
       }
     }
-    if (row.length > 0) cells.push(row);
+    if (row.length > 0) {
+      cells.push(row);
+      cellsShown.push(rowShown);
+    }
   }
   if (cells.length === 0) return;
   const text = cells.map((r) => r.join(' | ')).join(' \n ');
-  pushBlock(ctx, { type: 'table', text: strictNormalize(text), cells, links, ...(spanned ? { spanned: true } : {}) }, table, table);
+  const shownTable = anyShown ? { shown: strictNormalize(cellsShown.map((r) => r.join(' | ')).join(' \n ')), cellsShown } : {};
+  pushBlock(ctx, { type: 'table', text: strictNormalize(text), ...shownTable, cells, links, ...(spanned ? { spanned: true } : {}) }, table, table);
 }
 
 function closestTable(el: Element): Element | null {
@@ -716,11 +737,15 @@ function pickRoot(doc: Document, selector: string | undefined, notes: string[], 
     try {
       matches = (selectAll(selector, doc.children) as AnyNode[]).filter((n): n is Element => n instanceof Element);
     } catch (err) {
-      throw new HtmlExtractError(`Invalid selector: ${(err as Error).message}`, selector);
+      // The parser's message quotes the selector, so it is capped like the value (0.2.39, found by an outside review 2026-11-14).
+      // It quotes a piece of it in lower case or from the middle, where no masking can tell what the piece was, so a
+      // selector that holds a URL with a credential or a query value gets no quotation at all.
+      const quotes = redactText(selector) !== stripControlChars(selector);
+      throw new HtmlExtractError(`Invalid selector: ${quotes ? 'the selector is not repeated, because it holds a URL with user information, a query value or a fragment' : capValue((err as Error).message)}`, selector);
     }
     if (matches.length === 0) throw new HtmlExtractError('Selector matched no element.', selector);
     if (matches.length > 1) notes.push(`Selector "${capValue(selector)}" matched ${matches.length} elements; the first in document order was used.`);
-    return { root: matches[0] as Element, strategy: `selector:${selector}`, confidence: 'high' };
+    return { root: matches[0] as Element, strategy: `selector:${capValue(selector)}`, confidence: 'high' };
   }
   // A candidate the page hides is not its main content. Up to 0.2.12 the first candidate was taken as it was, so a
   // hidden <main> before the visible one was compared in its place and the visible content not at all. Candidates

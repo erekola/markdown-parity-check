@@ -8,8 +8,13 @@ import { redactText } from './normalize.js';
 /** Reporting boundary: every string that leaves the tool goes through redactText. Internal comparison
  * has already happened on the original values. */
 export function redactReport(report: Report): Report {
+  return mapStrings(report, redactText);
+}
+
+/** A copy of the value with fn applied to every string in it, however deep. */
+function mapStrings<T>(value: T, fn: (s: string) => string): T {
   const walk = (v: unknown): unknown => {
-    if (typeof v === 'string') return redactText(v);
+    if (typeof v === 'string') return fn(v);
     if (Array.isArray(v)) return v.map(walk);
     if (v && typeof v === 'object') {
       const out: Record<string, unknown> = {};
@@ -18,7 +23,14 @@ export function redactReport(report: Report): Report {
     }
     return v;
   };
-  return walk(report) as Report;
+  return walk(value) as T;
+}
+
+/** A value that came from a page or from an argument stays on its own line of the text report. A line feed or a
+ * carriage return in a link target, which an attribute can write as &#10; or &#13;, started a line that looked like a
+ * finding (0.2.39, found by an outside review 2026-11-14). The break is shown as \n or \r, the way JSON shows it. */
+function oneLine(s: string): string {
+  return s.replace(/[\r\n]/g, (c) => (c === '\n' ? '\\n' : '\\r'));
 }
 
 export function renderJson(input: Report): string {
@@ -55,7 +67,7 @@ function findingLines(i: number, f: Finding): string[] {
 }
 
 export function renderText(input: Report): string {
-  const report = redactReport(input);
+  const report = mapStrings(redactReport(input), oneLine);
   const out: string[] = [];
   const s = report.summary;
   out.push(`${TOOL_NAME} ${report.toolVersion} (${report.mode} mode${s.strict ? ', strict' : ''})`);

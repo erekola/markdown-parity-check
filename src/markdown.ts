@@ -8,7 +8,7 @@ import type { Block, Extraction, ExtractionIssue, Link, ListInfo } from './model
 import { BLOCK_TAGS, extractHtml, HtmlDepthError, MAX_NESTING_DEPTH, opensExcludedSubtree } from './html.js';
 import { parseDocument, Parser } from 'htmlparser2';
 import { Element, Text, type ChildNode } from 'domhandler';
-import { excerpt, extractNumbers, insideHiddenUrlPart, looseNormalize, normalizeCode, resolveHref, strictNormalize } from './normalize.js';
+import { excerpt, extractNumbers, insideHiddenUrlPart, insideUserinfoSpan, LinkTargetError, looseNormalize, MAX_LINK_TARGET_CHARS, normalizeCode, resolveHref, shownField, shownNormalize, strictNormalize, userinfoSpansOf, type UserinfoSpan } from './normalize.js';
 
 export interface MarkdownExtractOptions {
   baseUrl?: string | null;
@@ -40,6 +40,8 @@ interface Ctx {
   base: string | null;
   /** The text handed to the parser, which the node offsets point into. */
   source: string;
+  /** The user information found in source, computed when the first literal autolink asks. */
+  userinfo?: UserinfoSpan[];
   blocks: Block[];
   notes: string[];
   issues: ExtractionIssue[];
@@ -188,7 +190,7 @@ function inlineChildren(ctx: Ctx, children: PhrasingContent[], run: InlineRun, l
     const inner: InlineRun = { text: '', links: [] };
     inlineChildren(ctx, children.slice(i + 1, end), inner, line);
     const href = tag.attribs['href'];
-    if (href !== undefined) run.links.push({ text: strictNormalize(inner.text), rawHref: href, resolved: resolveHref(href, ctx.base) });
+    if (href !== undefined) run.links.push({ text: strictNormalize(inner.text), ...shownField(inner.text), rawHref: href, resolved: resolveHref(href, ctx.base) });
     run.links.push(...inner.links);
     run.text += inner.text;
     i = end;
@@ -250,7 +252,7 @@ function inline(ctx: Ctx, node: PhrasingContent | Nodes, run: InlineRun): void {
       inlineChildren(ctx, node.children, inner, node.position?.start.line);
       const def = ctx.definitions.get(node.identifier);
       if (def) {
-        run.links.push({ text: strictNormalize(inner.text), rawHref: def.url, resolved: resolveHref(def.url, ctx.base) });
+        run.links.push({ text: strictNormalize(inner.text), ...shownField(inner.text), rawHref: def.url, resolved: resolveHref(def.url, ctx.base) });
         run.links.push(...inner.links);
         run.text += inner.text;
       } else {
@@ -264,11 +266,19 @@ function inline(ctx: Ctx, node: PhrasingContent | Nodes, run: InlineRun): void {
     case 'link': {
       const inner: InlineRun = { text: '', links: [] };
       inlineChildren(ctx, node.children, inner, node.position?.start.line);
-      const link: Link = { text: strictNormalize(inner.text), rawHref: node.url, resolved: resolveHref(node.url, ctx.base) };
+      const link: Link = { text: strictNormalize(inner.text), ...shownField(inner.text), rawHref: node.url, resolved: resolveHref(node.url, ctx.base) };
       // A GFM literal autolink starts with neither [ nor <. One that GFM found inside a hidden part of another URL
-      // is compared as usual but shown masked (0.2.12).
+      // is compared as usual but shown masked (0.2.12). So is one that starts inside the user information of an
+      // address, scheme included, which GFM cuts at white space: the head of "https://user:pa ss@host/" is a link of
+      // its own, and so is the tail "ss@host" read as an e-mail address.
       const at = node.position?.start.offset;
-      if (at !== undefined && ctx.source[at] !== '[' && ctx.source[at] !== '<' && insideHiddenUrlPart(ctx.source, at)) link.masked = true;
+      if (at !== undefined && ctx.source[at] !== '[' && ctx.source[at] !== '<') {
+        if (insideHiddenUrlPart(ctx.source, at)) link.masked = true;
+        else if (ctx.source.includes('://')) {
+          ctx.userinfo ??= userinfoSpansOf(ctx.source);
+          if (insideUserinfoSpan(ctx.userinfo, at)) link.masked = true;
+        }
+      }
       run.links.push(link);
       run.links.push(...inner.links);
       run.text += inner.text;
@@ -297,27 +307,35 @@ function push(ctx: Ctx, partial: Omit<Block, 'loose' | 'numbers' | 'location'>, 
   // gives every block of a block anchor the anchor's link with the block's own text; the outermost link comes first (MP-08).
   for (let i = ctx.wrappers.length - 1; i >= 0; i--) {
     const href = ctx.wrappers[i]!.href;
-    if (href !== undefined) block.links.unshift({ text: strictNormalize(block.text), rawHref: href, resolved: resolveHref(href, ctx.base) });
+    if (href !== undefined) block.links.unshift({ text: strictNormalize(block.text), ...(block.shown !== undefined ? { shown: block.shown } : {}), rawHref: href, resolved: resolveHref(href, ctx.base) });
   }
   ctx.blocks.push(block);
 }
 
 function handleTable(ctx: Ctx, table: Table, listItem?: ListInfo): void {
   const cells: string[][] = [];
+  const cellsShown: string[][] = [];
+  let anyShown = false;
   const links: Link[] = [];
   for (const row of table.children) {
     const r: string[] = [];
+    const rShown: string[] = [];
     for (const cell of row.children) {
       const run: InlineRun = { text: '', links: [] };
       inlineChildren(ctx, cell.children, run, cell.position?.start.line);
       r.push(strictNormalize(run.text));
+      const shownCell = shownNormalize(run.text);
+      if (shownCell !== undefined) anyShown = true;
+      rShown.push(shownCell ?? r[r.length - 1]!);
       links.push(...run.links);
     }
     cells.push(r);
+    cellsShown.push(rShown);
   }
   if (cells.length === 0) return;
   const text = cells.map((r) => r.join(' | ')).join(' \n ');
-  push(ctx, { type: 'table', text: strictNormalize(text), cells, links, ...(listItem ? { list: listItem } : {}) }, table);
+  const shownTable = anyShown ? { shown: strictNormalize(cellsShown.map((r) => r.join(' | ')).join(' \n ')), cellsShown } : {};
+  push(ctx, { type: 'table', text: strictNormalize(text), ...shownTable, cells, links, ...(listItem ? { list: listItem } : {}) }, table);
 }
 
 const LEADING_TYPES = new Set<string>(['paragraph', 'heading', 'code', 'table', 'html']);
@@ -329,7 +347,7 @@ function handle(ctx: Ctx, node: RootContent, listItem?: ListInfo): void {
       const run: InlineRun = { text: '', links: [] };
       inlineChildren(ctx, node.children, run, node.position?.start.line);
       const text = strictNormalize(run.text);
-      if (text !== '') push(ctx, { type: 'heading', text, depth: node.depth, links: run.links, ...(listItem ? { list: listItem } : {}) }, node);
+      if (text !== '') push(ctx, { type: 'heading', text, ...shownField(run.text), depth: node.depth, links: run.links, ...(listItem ? { list: listItem } : {}) }, node);
       return;
     }
     case 'paragraph': {
@@ -337,7 +355,7 @@ function handle(ctx: Ctx, node: RootContent, listItem?: ListInfo): void {
       const run: InlineRun = { text: '', links: [] };
       inlineChildren(ctx, node.children, run, node.position?.start.line);
       const text = strictNormalize(run.text);
-      if (text !== '') push(ctx, { type: listItem ? 'listItem' : 'paragraph', text, links: run.links, ...(listItem ? { list: listItem } : {}) }, node);
+      if (text !== '') push(ctx, { type: listItem ? 'listItem' : 'paragraph', text, ...shownField(run.text), links: run.links, ...(listItem ? { list: listItem } : {}) }, node);
       return;
     }
     case 'code': {
@@ -426,6 +444,8 @@ function handleRawHtml(ctx: Ctx, value: string, line: number | undefined, listIt
     // reported depth one lower: the block is held to the same limit, and reported in the same terms, as the
     // same element tree on the HTML side.
     if (err instanceof HtmlDepthError) throw new HtmlDepthError(err.depth - 1, ctx.maxDepth);
+    // A link target over the limit stops the comparison, as it does on the HTML side.
+    if (err instanceof LinkTargetError) throw err;
     parsed = null;
   }
   const blocks = parsed?.blocks ?? [];
@@ -505,7 +525,12 @@ function openWrappers(fragment: string): Wrapper[] {
     onopentag(name, attribs) {
       const covers = attribs['hidden'] !== undefined || attribs['aria-hidden'] === 'true' || opensExcludedSubtree(name, attribs);
       const wrapper: Wrapper = { name, covers };
-      if (name === 'a' && attribs['href'] !== undefined && !covers) wrapper.href = attribs['href'];
+      if (name === 'a' && attribs['href'] !== undefined && !covers) {
+        // The href is written into the prefix of every raw HTML block that follows while the anchor is open, so a long
+        // one costs its length for each of them (0.2.39), also inside a wrapper that hides the blocks and never resolves it.
+        if (attribs['href'].length > MAX_LINK_TARGET_CHARS) throw new LinkTargetError(attribs['href'].length);
+        wrapper.href = attribs['href'];
+      }
       stack.push(wrapper);
     },
     onclosetag() {

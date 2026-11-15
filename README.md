@@ -78,10 +78,10 @@ A value that is outside these ranges, or that is not a plain run of digits, stop
 
 ### Example output
 
-This is the text report for the matching fixture pair in this repository, run with version 0.2.38 on 2026-11-13. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
+This is the text report for the matching fixture pair in this repository, run with version 0.2.39 on 2026-11-14. The exact command is in the Development section below. The text report ends with a list of limitations, which is omitted here:
 
 ```text
-markdown-parity-check 0.2.38 (offline mode)
+markdown-parity-check 0.2.39 (offline mode)
 Result: PASS (0 error(s), 0 warning(s), 1 info)
 
 HTML:     test/fixtures/same/page.html (file, 1,017 bytes, base https://example.com/page)
@@ -113,6 +113,8 @@ Front matter is kept by default and compared as content. If the HTML does not ca
 Headings, paragraphs, list items, tables, code blocks and links are compared block by block. A link that wraps block elements, such as a linked card with a heading and a paragraph, is compared as those blocks. Each keeps its own type and heading level and carries the link. The Markdown side is read the same way, so `## [Title](url)` is a heading with a link. In a table cell the link is read as part of the cell text.
 
 Content that is hidden or sits inside a left-out element is left out on both sides. This also holds when the raw HTML wrapper, such as `<div hidden>` or `<nav>`, is opened in one Markdown block and closed in a later one. A table caption counts as a paragraph before the table.
+
+Hidden means the `hidden` attribute, `aria-hidden="true"` and a `template` element, whose content a browser never renders. An element with `aria-hidden="true"` counts as hidden although a sighted reader still sees it, so text that only the HTML carries inside such an element is not reported as missing from the Markdown. A style that hides an element, such as `display: none`, is not evaluated, because CSS is not read. In the Markdown, an HTML comment and an unused link reference definition, which is one that no link uses, are not content and give no finding, not even with `--strict`. A definition that a link uses is compared through that link.
 
 - Errors: missing and added blocks, a change in text or numbers, a changed table or link, and a list item that shows another number or a different checked or unchecked state.
 - Warnings: a checkbox that is present on one side only, a difference in order and a difference in heading level, case, punctuation, list kind or nesting level. A difference in order is also reported for a block that moved and changed only in case, punctuation or typographic characters. A block that moved and also changed in its words or numbers gets the finding for that change and no order finding. A changed accent mark, vowel sign, symbol or emoji is a change in text and not in punctuation, so it is an error. A swapped symbol is an error also when a reader sees the same meaning. Examples are an ASCII arrow made of a hyphen and a greater-than sign against an arrow character, or a dropped trademark sign. An invisible variation selector alone is not. Each footnote in the Markdown is a warning, because footnotes are not compared. These are the main cases, and the `code` of each finding names the exact rule. A missing or extra copy of a repeated block is reported as a missing or added block, which is an error.
@@ -147,7 +149,11 @@ The choice follows the type of the response, not the request. Any other response
 
 ### Limits of the method
 
-JavaScript is not executed. Content that a page builds in the browser is compared as the server sent it. Block matching is heuristic, so some layouts need an explicit selector. Reports mask URL query values and fragments and remove any user name or password from a URL. Excerpts may still contain private page content. Review a report before you share it.
+JavaScript is not executed. Content that a page builds in the browser is compared as the server sent it. Block matching is heuristic, so some layouts need an explicit selector. Reports mask URL query values and fragments and remove the user name and password of an address with a scheme, such as `https://user:password@host/`. Excerpts may still contain private page content. Review a report before you share it.
+
+The masking is a display safeguard that does not hide ordinary text, so it has limits, and this paragraph is the full list. It removes the user name and password even when a tab, a line break or a space sits inside the user information, provided that the user information holds a colon, as in `user:password`. A user name alone, with no colon, is masked when a tab, a vertical tab or a form feed sits inside it, and is shown when a space, a no-break space, a line feed or a carriage return does, because a line break or a space between an address and an e-mail address is ordinary text. On a bare host name without a scheme, a query or a fragment is masked only when it holds an equals sign, so an anchor such as `example.com/docs/guide#step-3` and a path segment are shown. Not masked: a bracketed IPv6 host, a host with a trailing dot, a name with no dot other than `localhost`, an scp-style `git@host:path` and a scheme-less `user:password@host`. A plain space or a no-break space right after the colon of the user information, and a password of digits only that is followed by white space, are read as text and shown. The masking changes what a report shows and never what is compared, and a number difference inside a masked part still gives the number finding, with the values left out. In both formats U+200E, U+200F, U+061C, U+2028, U+2029 and the tag characters are removed from report text. The text report shows a line feed or a carriage return inside a string from a page or an argument as `\n` or `\r`.
+
+A link target longer than 8192 characters stops the run with exit code 2 and an error that names the limit and does not repeat the target. The comparison handles a target once for every link, block or reference that touches it, so the time grew with the length of the target times that count. The limit applies to the target as the page or the Markdown wrote it, before any resolution.
 
 ## Command line and hosted page
 
@@ -167,6 +173,7 @@ Some limits are not in the table:
 
 - A URL that contains a user name or password is refused even when its host is public, and the same holds for a redirect target.
 - A host written as an IPv6 literal in brackets is checked against the same address policy as a resolved address and is not looked up in DNS.
+- Of the IPv6 addresses, only the block 2000::/3, which is the global unicast space the IANA has allocated, can be public. Inside it the blocks that the IANA special-purpose registry does not mark as globally reachable are refused too. An address anywhere else, such as `8000::1` or `0:1::1`, is refused, with one exception: the forms that carry an IPv4 address are decided by that IPv4 address, as before. These are the IPv4-mapped form `::ffff:a.b.c.d`, the IPv4-translated form `::ffff:0:a.b.c.d`, the deprecated IPv4-compatible form `::a.b.c.d` and NAT64 `64:ff9b::a.b.c.d`, which all lie outside 2000::/3, and 6to4 and Teredo, which lie inside it. So `::ffff:8.8.8.8` and `64:ff9b::8.8.8.8` are public and `::ffff:127.0.0.1` is not.
 - The tool sends `Accept-Encoding: gzip, deflate, br` and decodes responses with no Content-Encoding, `identity`, `gzip`, `x-gzip`, `deflate` or `br`. A response with any other Content-Encoding, `zstd` for example, is rejected, and the run ends with exit code 2.
 - The command-line tool follows at most 5 redirects.
 - When elements are nested more than 1024 levels deep, the extraction stops with exit code 2. This holds in the HTML page, in a raw HTML block written inside the Markdown, across raw elements left open between Markdown blocks or in the Markdown's own structure.
@@ -210,11 +217,15 @@ When the Markdown source has `kind: 'url'` in its `meta`, the delivery check run
 
 A host with a smaller CPU or memory budget can pass lower `limits`, typed as `RunLimits`: `maxAlignmentPairs`, `maxSimilarityCandidates`, `maxSimilarityWork` and `maxNestingDepth`. The nesting limit also applies to raw HTML blocks inside the Markdown.
 
-Set `maxSimilarityWork` when the library compares untrusted documents. With the default limits one worst case at the full 4 000 000 block pairs (100 HTML blocks of 870 distinct words against 40 000 Markdown blocks of one word each) took between 26 and 30 seconds in hand timings on development machines. In the same case, a value of 2 000 000 made the pairing step stop after about 70 milliseconds, on top of the parse time.
+Set `maxSimilarityWork` when the library compares untrusted documents. With the default limits one worst case at the full 4 000 000 block pairs (100 HTML blocks of 870 distinct words against 40 000 Markdown blocks of one word each) took tens of seconds in hand timings on development machines. In the same case, a value of 2 000 000 made the pairing step stop, and the whole call, parsing included, took about a second.
 
 The test suite runs the bounded case and asserts no time. When a limit is exceeded, `run` throws a `RunError` whose message names the limit, and the command line reports it with exit code 2.
 
-The caller fetches the pages and decides which addresses are allowed. The address policy the command applies is exported as `assertPublicHost` and `isPublicAddress`.
+The library has no time limit and no memory limit of its own. A program that compares untrusted documents needs a time limit and a memory limit of its own, enforced outside the calling thread, for example in a worker thread, in a separate process or in an isolate with a CPU limit. `run` is synchronous, so a timer in the same thread cannot interrupt it, and the command line uses a worker thread for that reason. A link target over 8192 characters is a `RunError`, as described under the limits of the method.
+
+Some costs come from the parsers and are not bounded by this package. The table rule of `micromark-extension-gfm` and the bare link rule of `mdast-util-find-and-replace` take more than linear time on very large inputs. In hand timings on one development machine, a Markdown table of 10 000 one-cell rows and one row of 30 000 cells, under 250 kB, took tens of seconds to parse, and 100 000 bare links in one paragraph, 2.8 MB, took tens of seconds as well. A deeply nested HTML document needs memory in proportion to its blocks times their nesting depth. A document of 650 000 paragraphs inside 1 000 nested elements, 5 MiB, ran out of memory at about 4 GB, which ends a library process. The command line stops the same run with exit code 2, and the test suite does not repeat these timings.
+
+The caller fetches the pages and decides which addresses are allowed. The address policy that the command applies is exported as `assertPublicHost` and `isPublicAddress`. `assertPublicHost` takes `url.hostname` of a parsed `URL`, because the URL parser has already written a literal such as `2130706433` or `0x7f.0.0.1` as dotted decimal by then. A caller that checks the host and the resolved addresses and then lets `fetch()` resolve the name again can be sent to another address by a DNS answer that changes in between. The package exports no helper that pins the checked address. The command connects to the address it checked.
 
 ### Report format
 
@@ -261,12 +272,12 @@ Only after that check does it create the GitHub release with the verified tarbal
 GitHub Actions publishes every version from 0.1.2 on with npm trusted publishing, and each one carries a provenance attestation. To check one, install it in an empty directory and ask npm to verify the signatures. Replace the version with the one you want to check.
 
 ```sh
-mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.38 --ignore-scripts && npm audit signatures
+mkdir verify-mpc && cd verify-mpc && npm init -y && npm install markdown-parity-check@0.2.39 --ignore-scripts && npm audit signatures
 ```
 
 `npm audit signatures` checks the registry signature and the provenance attestation of each installed package that has one. The attestation of this package names three things to compare with what you expect: the repository `github.com/erekola/markdown-parity-check`, the workflow file `.github/workflows/release.yml` and the commit that produced the tarball. The npm version page shows them under Provenance.
 
-Tag `v0.2.38` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.38 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
+Tag `v0.2.39` must point at that same commit, and `gh api repos/erekola/markdown-parity-check/commits/v0.2.39 --jq .sha` prints it. A mismatch is a reason not to use that version. Provenance proves which workflow built a release and from which commit. It does not prove that the code is safe, so reading the source and the dependencies stays your job.
 
 ## Security
 

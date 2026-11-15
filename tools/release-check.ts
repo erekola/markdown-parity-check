@@ -62,9 +62,19 @@ export function sha1Hex(buf: Buffer): string {
   return crypto.createHash('sha1').update(buf).digest('hex');
 }
 
+/** The most the release check unpacks from one tarball. A tarball of this package is under 100 kB packed, so a gzip
+ * stream that expands past this is not one, and the check stops instead of filling the memory of the job that holds the
+ * publishing permission. */
+export const MAX_TARBALL_BYTES = 64 * 1024 * 1024;
+
 /** Reads a gzipped ustar/pax archive into entries with their content. Only regular files are returned. */
 export function readTarball(gz: Buffer): TarEntry[] {
-  const tar = zlib.gunzipSync(gz);
+  let tar: Buffer;
+  try {
+    tar = zlib.gunzipSync(gz, { maxOutputLength: MAX_TARBALL_BYTES });
+  } catch (err) {
+    throw new ReleaseCheckError(`The tarball could not be unpacked within ${MAX_TARBALL_BYTES} bytes: ${(err as Error).message}`);
+  }
   const entries: TarEntry[] = [];
   let offset = 0;
   let paxPath: string | undefined;

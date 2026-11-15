@@ -69,12 +69,18 @@ export function codeWhitespaceKey(code: string): string {
   return code.replace(/[\p{Zs}\t\r\n\f\v]+/gu, ' ').replace(/^ | $/g, '');
 }
 
-/** Code content: CRLF and CR line endings become LF and every trailing newline is removed; other whitespace is kept. */
+/** Code content: CRLF and CR line endings become LF and every trailing newline is removed; other whitespace is kept.
+ * The trailing newlines are counted off from the end. The expression /\n+$/ that did this up to 0.2.38 starts a new
+ * scan at every newline of a long run and takes time quadratic in its length. */
 export function normalizeCode(code: string): string {
-  return code.replace(/\r\n?/g, '\n').replace(/\n+$/, '');
+  const text = code.replace(/\r\n?/g, '\n');
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) === 0x0a) end--;
+  return end === text.length ? text : text.slice(0, end);
 }
 
-// Terminal control characters (ANSI escape sequences, C0 and C1 controls) and the Unicode bidi controls reach a text report unescaped if a
+// Terminal control characters (ANSI escape sequences, C0 and C1 controls), the Unicode bidi controls, the line and
+// paragraph separators and the tag characters reach a text report unescaped if a
 // compared page or an argument carries one. --format json is safe only in part on its own: JSON.stringify escapes
 // the C0 controls (U+0000 to U+001F) and lone surrogates, and leaves U+007F, the C1 controls and the bidi controls
 // literal. It is safe in practice because renderJson sends every string value through redactText first, so this
@@ -83,7 +89,11 @@ export function normalizeCode(code: string): string {
 // C1 controls (U+0080 to U+009F) include the single-byte CSI (U+009B), which some terminals read as an escape. The bidi
 // controls (U+202A to U+202E and U+2066 to U+2069) reorder the text a reader sees, so a quoted excerpt could read
 // differently in a report than in the page. Both ranges match the hosted validator's stripControls(stripBidi()).
-const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202A-\u202E\u2066-\u2069]/g;
+// Since 0.2.39 the left-to-right and right-to-left marks and the Arabic letter mark (U+200E, U+200F, U+061C) go too,
+// as the comment above said the bidi controls did, and so do U+2028 and U+2029, which some viewers read as a line
+// break, and the tag characters (U+E0000 to U+E007F), which no reader sees and a program reading the report can. The
+// zero width joiner and non-joiner and the variation selectors stay: emoji and several scripts need them.
+const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202A-\u202E\u2066-\u2069\u{e0000}-\u{e007f}]/gu;
 
 /** Removes the escape character (which starts an ANSI escape sequence), the other C0 and C1 controls and the Unicode
  * bidi controls from a value that may come from a compared page or a raw argument, so a plain --format text report
@@ -111,7 +121,7 @@ export function extractNumbers(text: string): string[] {
 
 /** Report excerpt: URLs inside the text are masked BEFORE truncation, so a cut query value cannot leak. */
 export function excerpt(text: string, max = 80): string {
-  const t = redactText(strictNormalize(text));
+  const t = redactText(strictNormalize(dropAuthorityControls(text)));
   return t.length <= max ? t : t.slice(0, max - 1) + '\u2026';
 }
 
@@ -120,7 +130,7 @@ export function excerpt(text: string, max = 80): string {
 //
 // Up to 0.2.1 this was one regular expression, kept in test/linear.test.ts as the reference. Its time was
 // quadratic in the length of a run without whitespace (CodeQL js/polynomial-redos; 80 000 characters took
-// 4.2 s), and the text comes from the compared page. Every alternative of that expression ends where the
+// seconds), and the text comes from the compared page. Every alternative of that expression ends where the
 // run of characters other than whitespace and < > " ' ( ) ends, so a run holds at most one match, and the
 // match starts at the leftmost position where any alternative can start. urlStart finds that position
 // with a few linear scans of the run, and the test compares the two on random input.
@@ -173,6 +183,16 @@ function urlStart(t: string, s: number, e: number): number {
       break;
     }
   }
+  // (?<![\w.-])(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:[\w-]+\.)+(?:[a-z]{2,}|xn--[a-z0-9-]+))(?::\d+)?(?:[\/\\]|#(?=...=))
+  // A bare host name followed by a path (0.2.39): dotted labels that end in a letters-only label of two or more
+  // characters or in an xn-- label, a dotted IPv4 address or localhost, then an optional port, then a slash or a
+  // backslash, or a fragment with an equals sign somewhere after it. The host is not glued to a word, dot or hyphen
+  // before it. A query value or fragment of such an address, example.com/cb#access_token=..., reached a report
+  // unmasked; rewriteBareHost hides a query or a fragment of such an address only when it holds an equals sign. A
+  // file name, a version number and an abbreviation have no such ending, and a fragment without an equals
+  // sign after a host that has no slash, as in README.md#section, is prose.
+  const host = bareHostStart(t, s, e);
+  if (host >= 0 && (best < 0 || host < best)) best = host;
   // (?<![\w/])\/[^\s<>"'()]*[?#][^\s<>"'()]*  The first '/' that does not follow a word character or '/',
   // when a '?' or '#' comes after it in the run.
   let lastQueryOrHash = -1;
@@ -237,6 +257,77 @@ function urlStart(t: string, s: number, e: number): number {
   return best;
 }
 
+/** Start of the first bare host name with a path in the run t[s, e), or -1. A chain of labels is read once from its
+ * first character, so the scan is linear: the position of the last equals sign of the run is found once, so a fragment
+ * is not rescanned for each chain before it. */
+function bareHostStart(t: string, s: number, e: number): number {
+  const isLabelChar = (c: number) => isLetter(c) || isDigit(c) || c === 0x2d || c === 0x5f;
+  let lastEquals = e - 1;
+  while (lastEquals >= s && t.charCodeAt(lastEquals) !== 0x3d) lastEquals--;
+  let i = s;
+  while (i < e) {
+    const before = i > 0 ? t.charCodeAt(i - 1) : -1;
+    const c = t.charCodeAt(i);
+    if (!isLabelChar(c) || (i > s && (isWord(before) || before === 0x2e || before === 0x2d))) {
+      i++;
+      continue;
+    }
+    // One chain of labels starting at i.
+    let j = i;
+    let labels = 0;
+    let lastStart = i;
+    for (;;) {
+      lastStart = j;
+      while (j < e && isLabelChar(t.charCodeAt(j))) j++;
+      labels++;
+      if (j + 1 < e && t.charCodeAt(j) === 0x2e && isLabelChar(t.charCodeAt(j + 1))) j++;
+      else break;
+    }
+    let tld = j - lastStart >= 2;
+    for (let k = lastStart; tld && k < j; k++) if (!isLetter(t.charCodeAt(k))) tld = false;
+    if (!tld && j - lastStart >= 5) {
+      // A punycode label, xn-- and then letters, digits and hyphens.
+      const fold = (c: number) => (c >= 0x41 && c <= 0x5a ? c + 0x20 : c);
+      tld = fold(t.charCodeAt(lastStart)) === 0x78 && fold(t.charCodeAt(lastStart + 1)) === 0x6e && t.charCodeAt(lastStart + 2) === 0x2d && t.charCodeAt(lastStart + 3) === 0x2d;
+      for (let k = lastStart + 4; tld && k < j; k++) if (t.charCodeAt(k) === 0x5f) tld = false;
+    }
+    let host = labels >= 2 && tld;
+    if (!host && labels === 4) {
+      // A dotted IPv4 address: four labels of one to three digits.
+      host = true;
+      for (let k = i, len = 0; host && k <= j; k++) {
+        if (k === j || t.charCodeAt(k) === 0x2e) {
+          if (len < 1 || len > 3) host = false;
+          len = 0;
+        } else if (isDigit(t.charCodeAt(k))) len++;
+        else host = false;
+      }
+    }
+    if (!host && labels === 1 && j - i === 9) {
+      // localhost, in any case.
+      host = true;
+      for (let k = 0; host && k < 9; k++) {
+        const c = t.charCodeAt(i + k);
+        const f = c === 0x17f ? 0x73 : c >= 0x41 && c <= 0x5a ? c + 0x20 : c;
+        host = f === 'localhost'.charCodeAt(k);
+      }
+    }
+    let k = j;
+    if (k < e && t.charCodeAt(k) === 0x3a) {
+      k++;
+      const digits = k;
+      while (k < e && isDigit(t.charCodeAt(k))) k++;
+      if (k === digits) k = j;
+    }
+    if (host && k < e) {
+      const c = t.charCodeAt(k);
+      if (c === 0x2f || c === 0x5c || (c === 0x23 && lastEquals > k)) return i;
+    }
+    i = j > i ? j : i + 1;
+  }
+  return -1;
+}
+
 const SPECIAL_SCHEME_NAMES = ['https', 'http', 'ftp', 'wss', 'ws', 'file'];
 
 /** Length of the special scheme name at t[p] when a colon follows it, else -1. Letters compare with the old
@@ -288,6 +379,29 @@ function tokenEnd(text: string, e: number): number {
   return e + (m ? m[0].length : 0);
 }
 
+/** Whether the URL-like match at p in the run t[s, e) is a bare host with a path: a match that starts at a host name
+ * and not at a scheme, "www.", slashes or a path. */
+function isBareHostMatch(t: string, s: number, e: number, p: number): boolean {
+  if (bareHostStart(t, s, e) !== p) return false;
+  const w = (c: number) => (c === 0x57 || c === 0x77 ? 1 : 0);
+  return !(p + 3 < e && w(t.charCodeAt(p)) && w(t.charCodeAt(p + 1)) && w(t.charCodeAt(p + 2)) && t.charCodeAt(p + 3) === 0x2e);
+}
+
+/** The rewrite of a bare host with a path, such as example.com/docs/guide#step-3 (0.2.39). Its query and its fragment
+ * are hidden only when they carry a value, an equals sign, as in example.com/cb#access_token=... and
+ * example.com/cb?t=...: an anchor, a line number and a query without a value are shown as they are, because a page
+ * that differs in one of them must show the difference. The path is never hidden. */
+function rewriteBareHost(url: string, rewrite: (url: string) => string): string {
+  const hashAt = url.indexOf('#');
+  const fragment = hashAt < 0 ? '' : url.slice(hashAt);
+  const head = hashAt < 0 ? url : url.slice(0, hashAt);
+  const q = head.indexOf('?');
+  const queryHasValue = q >= 0 && head.indexOf('=', q) >= 0;
+  const hideFragment = fragment.includes('=');
+  if (!queryHasValue && !hideFragment) return url;
+  return (queryHasValue ? rewrite(head) : head) + (hideFragment ? '' : fragment);
+}
+
 /** Rewrites the URL-like part of every run in a piece of text and leaves the rest untouched. */
 function rewriteUrlRuns(text: string, rewrite: (url: string) => string): string {
   let out = '';
@@ -300,7 +414,8 @@ function rewriteUrlRuns(text: string, rewrite: (url: string) => string): string 
     if (p < 0) continue;
     const t = tokenEnd(text, e);
     const end = urlEnd(text, p, t);
-    out += text.slice(done, p) + rewrite(text.slice(p, end)) + text.slice(end, t);
+    const url = text.slice(p, end);
+    out += text.slice(done, p) + (isBareHostMatch(text, s, e, p) ? rewriteBareHost(url, rewrite) : rewrite(url)) + text.slice(end, t);
     done = t;
     runs.lastIndex = t;
   }
@@ -466,12 +581,219 @@ export function insideHiddenUrlPart(text: string, at: number): boolean {
   return false;
 }
 
+const isSpaceCode = (c: number) => (c < 0x80 ? c === 0x20 || (c >= 0x09 && c <= 0x0d) : /\s/u.test(String.fromCharCode(c)));
+
+/**
+ * Masks the user information of every "scheme://authority" in a piece of text, wherever the scheme sits and
+ * whatever the user information starts with (0.2.39, found by an outside review 2026-11-14). The run-based masking
+ * above reads the text in runs that end at white space and at the characters < > " ' ( ), so a URL whose user name
+ * opens with one of them, such as https://"admin":secret@host/ or https://(token)@host/, was cut in two runs, and a
+ * URL that follows "=", "," or ":" in the same run, such as redirect_uri=https://u:secret@host/cb?state=1, was read as
+ * one run that starts at its first character, where the parser finds no scheme and so no user information. Here the
+ * authority is the text after "://" up to the next slash, backslash, question mark, number sign or white space, as
+ * the URL parser reads it, and its user information ends at the last "@" in it. The scheme is the run of scheme
+ * characters before "://" that holds a letter. The user information becomes ***, so the host, path and query reach
+ * the run-based masking as before. One pass: an authority ends at a slash, so no two of them overlap.
+ *
+ * With whiteSpaceInside, a tab, a line feed or a carriage return inside the authority does not end it, as the URL
+ * parser removes them, and nor does any other white space when the text up to the last "@" holds a colon that is not
+ * followed by white space ("https://example.com: see me@x.org" is prose), so
+ * https://us er:secret@host/ and https://user:pa ss@host/ are masked whole. Without a colon the white space ends the
+ * authority, so "visit https://example.com for me@x.org" is prose. The authority does not go on past white
+ * space either when the text between its last colon and that white space is a port, one to five digits, or the end
+ * of a bracketed host, so "Use https://api.example.com:8443 or write to ops@example.org" keeps the address; a
+ * password of digits only that is followed by white space is therefore not masked. Only the report text uses it: the
+ * numbers of the comparison are read through hideUrlSecrets, which does not.
+ */
+export function maskAuthorityUserinfo(text: string, whiteSpaceInside = false): string {
+  const spans = findUserinfoSpans(text, whiteSpaceInside);
+  if (spans.length === 0) return text;
+  let out = '';
+  let pos = 0;
+  for (const s of spans) {
+    out += text.slice(pos, s.from) + '***@';
+    pos = s.at + 1;
+  }
+  return out + text.slice(pos);
+}
+
+/** One user information found by findUserinfoSpans: start is the first character of the scheme, from the first
+ * character after "://" and at the "@" that ends the user information. */
+export interface UserinfoSpan {
+  start: number;
+  from: number;
+  at: number;
+}
+
+/** One to five ASCII digits in text[from, to): a port. */
+function isPortText(text: string, from: number, to: number): boolean {
+  if (to - from < 1 || to - from > 5) return false;
+  for (let k = from; k < to; k++) if (!isDigit(text.charCodeAt(k))) return false;
+  return true;
+}
+
+/** The user information of every "scheme://authority" of a text, in order and without overlap. The rules are the
+ * ones maskAuthorityUserinfo describes. */
+export function findUserinfoSpans(text: string, whiteSpaceInside = false): UserinfoSpan[] {
+  const spans: UserinfoSpan[] = [];
+  let pos = 0;
+  let from = 0;
+  for (;;) {
+    const colon = text.indexOf('://', from);
+    if (colon < 0) break;
+    from = colon + 3;
+    let hasLetter = false;
+    let start = colon;
+    for (let k = colon; k > pos && isSchemeChar(text.charCodeAt(k - 1)); k--) {
+      start = k - 1;
+      if (isLetter(text.charCodeAt(k - 1))) hasLetter = true;
+    }
+    if (!hasLetter) continue;
+    let at = -1;
+    let lastAt = -1;
+    let firstSpace = -1;
+    let firstColon = -1;
+    let lastColon = -1;
+    let seenSpace = false;
+    for (let e = from; e < text.length; e++) {
+      const c = text.charCodeAt(e);
+      if (c === 0x2f || c === 0x5c || c === 0x3f || c === 0x23) break;
+      if (whiteSpaceInside && !seenSpace && isSpaceCode(c)) {
+        seenSpace = true;
+        // A port or the end of a bracketed host before the first white space: what follows is text, not user information.
+        if ((lastColon >= 0 && isPortText(text, lastColon + 1, e)) || text.charCodeAt(e - 1) === 0x5d) break;
+      }
+      if (isSpaceCode(c) && !(whiteSpaceInside && (c === 0x09 || c === 0x0a || c === 0x0d))) {
+        if (!whiteSpaceInside) break;
+        if (firstSpace < 0) firstSpace = e;
+        continue;
+      }
+      if (c === 0x3a) {
+        lastColon = e;
+        if (firstColon < 0 && !isSpaceCode(text.charCodeAt(e + 1))) firstColon = e;
+      }
+      if (c === 0x40) {
+        lastAt = e;
+        if (firstSpace < 0) at = e;
+      }
+    }
+    if (lastAt > firstSpace && firstSpace >= 0 && firstColon >= 0 && firstColon < lastAt) at = lastAt;
+    if (at < 0) continue;
+    spans.push({ start, from: colon + 3, at });
+    pos = at + 1;
+    from = pos;
+  }
+  return spans;
+}
+
+/** The text as a report shows it, for a raw text whose white space the credential masking needs: undefined when
+ * dropAuthorityControls changes nothing, else the normalized text without the white space inside user information.
+ * It is for display only. The comparison keys come from strictNormalize alone, as in 0.2.38, because removing the
+ * white space there made two texts that differ only in the kind of white space compare unequal, and the reverse. */
+export function shownNormalize(raw: string): string | undefined {
+  const dropped = dropAuthorityControls(raw);
+  return dropped === raw ? undefined : strictNormalize(dropped);
+}
+
+/** shownNormalize as an object to spread into a block or a link: {} or { shown }. */
+export function shownField(raw: string): { shown?: string } {
+  const s = shownNormalize(raw);
+  return s === undefined ? {} : { shown: s };
+}
+
+const CONTROL_WHITE_SPACE = /[\t\n\v\f\r]/;
+
+/**
+ * Removes a tab, a vertical tab, a form feed, a line feed or a carriage return from the user information of a
+ * "scheme://authority" when it is a credential, in a text that is only displayed, before the white space is
+ * collapsed into a plain space. It is never part of a comparison key. The URL
+ * parser drops a tab, a line feed and a carriage return from an address, and none of the five can stand in a user
+ * name or a password a reader sees, but a plain space after the colon of "https://user: secret@host" makes the
+ * masking read prose, so the password reached the report. Only an authority that ends at the first white space other
+ * than these five is read, and only one that holds a colon in front of the last "@", which is not followed by a plain
+ * space and does not end a port: "https://example.com:8443" and a line break and then an address is text. Without
+ * a colon only a tab, a vertical tab and a form feed count, because a line break between an address and an e-mail
+ * address is ordinary text.
+ */
+export function dropAuthorityControls(text: string): string {
+  if (!CONTROL_WHITE_SPACE.test(text) || !text.includes('://')) return text;
+  let out = '';
+  let pos = 0;
+  let from = 0;
+  for (;;) {
+    const colon = text.indexOf('://', from);
+    if (colon < 0) break;
+    from = colon + 3;
+    let hasLetter = false;
+    for (let k = colon; k > pos && isSchemeChar(text.charCodeAt(k - 1)); k--) {
+      if (isLetter(text.charCodeAt(k - 1))) hasLetter = true;
+    }
+    if (!hasLetter) continue;
+    let lastAt = -1;
+    for (let e = from; e < text.length; e++) {
+      const c = text.charCodeAt(e);
+      if (c === 0x2f || c === 0x5c || c === 0x3f || c === 0x23) break;
+      if (isSpaceCode(c) && !isControlWhiteSpace(c)) break;
+      if (c === 0x40) lastAt = e;
+    }
+    if (lastAt < 0) continue;
+    let firstControl = -1;
+    let lastColon = -1;
+    let lineBreak = false;
+    let colonRule = false;
+    for (let e = from; e < lastAt; e++) {
+      const c = text.charCodeAt(e);
+      if (isControlWhiteSpace(c)) {
+        if (firstControl < 0) firstControl = e;
+        if (c === 0x0a || c === 0x0d) lineBreak = true;
+      } else if (c === 0x3a) {
+        if (firstControl < 0) lastColon = e;
+        const next = text.charCodeAt(e + 1);
+        if (!isSpaceCode(next) || isControlWhiteSpace(next)) colonRule = true;
+      }
+    }
+    if (firstControl < 0) continue;
+    if (lastColon >= 0 && isPortText(text, lastColon + 1, firstControl)) continue;
+    if (firstControl > from && text.charCodeAt(firstControl - 1) === 0x5d) continue;
+    if (!colonRule && lineBreak) continue;
+    out += text.slice(pos, from) + text.slice(from, lastAt).replace(/[\t\n\v\f\r]/g, '');
+    pos = lastAt;
+    from = lastAt + 1;
+  }
+  return pos === 0 ? text : out + text.slice(pos);
+}
+
+const isControlWhiteSpace = (c: number) => c === 0x09 || c === 0x0a || c === 0x0b || c === 0x0c || c === 0x0d;
+
+/** The user information of a source text, computed once for the positions of its links. The characters that
+ * stripControlChars removes are read as a tab, which keeps every position and does not end an authority. */
+export function userinfoSpansOf(text: string): UserinfoSpan[] {
+  return findUserinfoSpans(text.replace(CONTROL_CHARS, (m) => '\t'.repeat(m.length)), true);
+}
+
+/** Whether position at lies in a user information of spans, scheme included, the "@" included. */
+export function insideUserinfoSpan(spans: UserinfoSpan[], at: number): boolean {
+  let lo = 0;
+  let hi = spans.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const s = spans[mid]!;
+    if (at < s.start) hi = mid - 1;
+    else if (at > s.at) lo = mid + 1;
+    else return true;
+  }
+  return false;
+}
+
 /** Masks user information, query values and fragments of every URL-like run in a piece of report text.
- * maskParenUserinfo runs first for the parenthesized-userinfo shape RUN cannot see as one run, and
+ * maskParenUserinfo and maskAuthorityUserinfo run first, for the shapes the runs of RUN cannot see as one URL, and
  * stripControlChars runs last so a raw ANSI escape from a compared page or an argument cannot reach a plain
  * --format text report (0.2.16, found by an outside review 2026-09-28). */
 export function redactText(text: string): string {
-  return stripControlChars(rewriteUrlRuns(maskParenUserinfo(text), maskHref));
+  // The control characters go first as well as last: a vertical tab, a form feed, U+2028 or U+0085 inside the user
+  // information would otherwise end the authority for the masking and be removed afterwards, which left a credential
+  // that read as a whole URL.
+  return stripControlChars(rewriteUrlRuns(maskAuthorityUserinfo(maskParenUserinfo(stripControlChars(text)), true), maskHref));
 }
 
 /**
@@ -484,7 +806,7 @@ export function hideUrlSecrets(text: string): string {
   // review 2026-09-28): up to here only redactText applied it, so visibleNumbers below still read a
   // number straight out of an unmasked "(name):secret@" that the general run-based scan cannot see as
   // one run (see the comment on PAREN_USERINFO_START above).
-  return rewriteUrlRuns(maskParenUserinfo(text), withoutUrlSecrets);
+  return rewriteUrlRuns(maskAuthorityUserinfo(maskParenUserinfo(text)), withoutUrlSecrets);
 }
 
 /**
@@ -509,8 +831,25 @@ export function trimHref(href: string): string {
   return href.slice(start, end);
 }
 
-/** Resolves a possibly relative href against a base. Returns null when it cannot be resolved. */
+/** The longest link target the comparison accepts, in characters of the href as the page or the Markdown wrote it.
+ * Up to 0.2.38 the length had no bound, and the time of the comparison grew with the length times the number of
+ * links, blocks or references that handle it again (minutes for a few thousand links against a 100 000 character
+ * target). 8192 is the longest request line the Apache default accepts and is far above any link a page needs;
+ * a data: URI longer than this is not a link a reader follows. */
+export const MAX_LINK_TARGET_CHARS = 8192;
+
+/** A link target is longer than MAX_LINK_TARGET_CHARS. It names the length and never repeats the target. */
+export class LinkTargetError extends Error {
+  constructor(readonly length: number) {
+    super(`A link target is ${length} characters long, more than the limit of ${MAX_LINK_TARGET_CHARS}; the comparison was not run.`);
+    this.name = 'LinkTargetError';
+  }
+}
+
+/** Resolves a possibly relative href against a base. Returns null when it cannot be resolved. Throws a
+ * LinkTargetError for a target longer than MAX_LINK_TARGET_CHARS. */
 export function resolveHref(rawHref: string, base: string | null): string | null {
+  if (rawHref.length > MAX_LINK_TARGET_CHARS) throw new LinkTargetError(rawHref.length);
   const href = trimHref(rawHref);
   if (href === '') return null;
   if (base) {
@@ -543,7 +882,7 @@ export function maskHref(href: string): string {
     u.password = '';
     // One pass: a Set keeps the first-seen key order and merges duplicates, and the
     // masked query is built once with append. Calling searchParams.set for each key re-serializes the whole query
-    // every time, which is quadratic in the number of keys (5 000 keys took 2.1 s, 20 000 took 35 s). An empty
+    // every time, which is quadratic in the number of keys (20 000 keys took tens of seconds). An empty
     // query is left as it is, so "?" stays "?".
     const maskedQuery = new URLSearchParams();
     for (const key of new Set<string>(u.searchParams.keys())) maskedQuery.append(key, '***');

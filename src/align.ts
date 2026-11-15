@@ -40,7 +40,14 @@ function looseKey(b: Block): string {
 /** The link targets of a block, with their texts, in order. Blocks with equal text and equal link signatures are the
  * same block as far as the links go, so the alignment prefers them over equal-text blocks with other targets (MP-13). */
 function linkSignature(b: Block): string {
-  return b.links.map((l) => `${l.text}\x1f${l.resolved ?? l.rawHref}`).join('\x1e');
+  try {
+    return b.links.map((l) => `${l.text}\x1f${l.resolved ?? l.rawHref}`).join('\x1e');
+  } catch (err) {
+    // The targets of one block together are longer than a string can be. Up to 0.2.38 the RangeError reached the caller
+    // as an unexpected error with a stack; it is a limit of the comparison like the others.
+    if (err instanceof RangeError) throw new AlignmentLimitError(`Comparison limit exceeded: the link targets of one block (${b.links.length} links) are too long together to compare.`);
+    throw err;
+  }
 }
 
 export const SIMILARITY_THRESHOLD = 0.6;

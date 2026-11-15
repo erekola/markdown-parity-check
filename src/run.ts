@@ -6,7 +6,7 @@ import { compare, type Coverage } from './compare.js';
 import { extractHtml, HtmlExtractError, MAX_NESTING_DEPTH } from './html.js';
 import { extractMarkdown, MarkdownExtractError } from './markdown.js';
 import type { Extraction, Finding } from './model.js';
-import { maskUrl } from './normalize.js';
+import { LinkTargetError, maskUrl } from './normalize.js';
 import { TOOL_VERSION } from './version.js';
 
 export interface SourceMeta {
@@ -53,6 +53,7 @@ export { MAX_NESTING_DEPTH };
 function extractionError(side: 'HTML' | 'Markdown', err: unknown): RunError | null {
   if (err instanceof HtmlExtractError) return new RunError(err.message, err.value);
   if (err instanceof MarkdownExtractError) return new RunError(err.message);
+  if (err instanceof LinkTargetError) return new RunError(err.message);
   if (err instanceof RangeError) return new RunError(`The ${side} could not be parsed within the call stack (${err.message}); it is nested too deeply to compare.`);
   return null;
 }

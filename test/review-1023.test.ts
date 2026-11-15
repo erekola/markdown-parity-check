@@ -342,7 +342,8 @@ describe('redactText removes C1 and bidi controls (K7)', () => {
   });
   it('still removes C0 controls and keeps ordinary text, tab, newline and neighbouring code points', () => {
     assert.equal(redactText('a' + String.fromCharCode(27) + '[31mb'), 'a[31mb');
-    const text = 'Plain text, tab' + String.fromCharCode(9) + 'here,' + String.fromCharCode(10) + 'new line, ' + String.fromCharCode(0xa0) + 'nbsp, ' + String.fromCharCode(0xff, 0xe4, 0xf6, 0x2028, 0x202f, 0x2065, 0x206a, 0x4e2d) + '.';
+    // U+2028 left this list in 0.2.39: redactText removes it now, as a line separator some viewers read as a line break.
+    const text = 'Plain text, tab' + String.fromCharCode(9) + 'here,' + String.fromCharCode(10) + 'new line, ' + String.fromCharCode(0xa0) + 'nbsp, ' + String.fromCharCode(0xff, 0xe4, 0xf6, 0x202f, 0x2065, 0x206a, 0x4e2d) + '.';
     assert.equal(redactText(text), text);
   });
 });
@@ -365,7 +366,8 @@ describe('netguard: IPv4-translated range ::ffff:0:a.b.c.d (K11)', () => {
   });
   it('does not widen the block to neighbouring ranges', () => {
     assert.equal(isPublicAddress('2606:4700::6810:84e5'), true);
-    assert.equal(isPublicAddress('::ffff:1:5db8:d822'), true);
+    // ::ffff:1:5db8:d822 is outside 2000::/3, so it is refused since 0.2.39, as every address outside it is.
+    assert.equal(isPublicAddress('::ffff:1:5db8:d822'), false);
   });
 });
 

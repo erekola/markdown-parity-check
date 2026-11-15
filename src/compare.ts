@@ -23,10 +23,14 @@ export interface CompareResult {
 // finding computed it again, and a block with thousands of link findings did that thousands of times (0.2.12).
 const sides = new WeakMap<Block, FindingSide>();
 
+/** The text of a block as a report shows it: the display text when the credential masking needed one, else the
+ * comparison text. Nothing is compared through it. */
+const shownText = (b: Block): string => b.shown ?? b.text;
+
 function side(b: Block): FindingSide {
   let s = sides.get(b);
   if (!s) {
-    s = { line: b.location.line, path: b.location.path, blockIndex: b.location.blockIndex, excerpt: excerpt(b.type === 'code' ? (b.code ?? b.text) : b.text) };
+    s = { line: b.location.line, path: b.location.path, blockIndex: b.location.blockIndex, excerpt: excerpt(b.type === 'code' ? (b.code ?? b.text) : shownText(b)) };
     sides.set(b, s);
   }
   return { ...s };
@@ -74,7 +78,7 @@ export function diffNumbers(a: string[], b: string[]): { before: string[]; after
 }
 
 // What a finding shows of a link. A link GFM made out of a hidden part of a URL shows neither text nor target.
-const linkText = (l: Link, other?: Link) => (l.masked || other?.masked ? '***' : redactText(l.text));
+const linkText = (l: Link, other?: Link) => (l.masked || other?.masked ? '***' : redactText(l.shown ?? l.text));
 const linkHref = (l: Link, href: string) => (l.masked ? '***' : maskHref(href));
 
 /**
@@ -300,11 +304,17 @@ function compareTables(out: Finding[], h: Block, m: Block): void {
     return;
   }
   for (let r = 0; r < hc.length; r++) {
-    for (let c = 0; c < hCols; c++) {
+    // Only the cells a row has: a cell past the end of both rows is empty on both sides and cannot differ. Up to 0.2.38
+    // every row was walked to the width of the widest one, so one wide row among many narrow ones cost rows times width.
+    const width = Math.max(hc[r]?.length ?? 0, mc[r]?.length ?? 0);
+    for (let c = 0; c < width; c++) {
       const hv = hc[r]?.[c] ?? '';
       const mv = mc[r]?.[c] ?? '';
       if (hv !== mv) {
-        out.push({ code: 'TABLE_CELL_CHANGED', severity: 'error', direction: 'both', message: `Table cell (row ${r + 1}, column ${c + 1}) differs.`, html: side(h), markdown: side(m), before: hv, after: mv });
+        // The values are shown as excerpts, like every other text of a finding: a cell of a megabyte is not copied whole.
+        const hShown = h.cellsShown?.[r]?.[c] ?? hv;
+        const mShown = m.cellsShown?.[r]?.[c] ?? mv;
+        out.push({ code: 'TABLE_CELL_CHANGED', severity: 'error', direction: 'both', message: `Table cell (row ${r + 1}, column ${c + 1}) differs.`, html: side(h), markdown: side(m), before: excerpt(hShown), after: excerpt(mShown) });
       }
     }
   }
@@ -342,7 +352,7 @@ function comparePair(out: Finding[], p: Pair, h: Block, m: Block, bothBases: boo
       // information, so a change there is still a number change and the classification does not move. What the
       // finding shows is read again from the text with those parts taken out, because the report masks them and
       // a bare number is not recognisable as part of a URL at the reporting boundary (0.2.10).
-      const shown = diffNumbers(visibleNumbers(h.text), visibleNumbers(m.text));
+      const shown = diffNumbers(visibleNumbers(shownText(h)), visibleNumbers(shownText(m)));
       if (shown) {
         out.push({ code: 'NUMBER_CHANGED', severity: 'error', direction: 'both', message: `Numeric value differs in the ${label(h)}: ${shown.before.join(', ') || '(none)'} in HTML, ${shown.after.join(', ') || '(none)'} in Markdown.`, html: side(h), markdown: side(m), before: shown.before.join(', '), after: shown.after.join(', ') });
       } else {
@@ -350,9 +360,9 @@ function comparePair(out: Finding[], p: Pair, h: Block, m: Block, bothBases: boo
       }
     } else if (textKey(h.text) === textKey(m.text)) {
       // The text key keeps the marks and symbols the alignment key drops (MP-11).
-      out.push({ code: 'TEXT_MINOR_CHANGED', severity: 'warning', direction: 'both', message: `The ${label(h)} differs only in case, punctuation or typographic characters.`, html: side(h), markdown: side(m), before: excerpt(h.text), after: excerpt(m.text) });
+      out.push({ code: 'TEXT_MINOR_CHANGED', severity: 'warning', direction: 'both', message: `The ${label(h)} differs only in case, punctuation or typographic characters.`, html: side(h), markdown: side(m), before: excerpt(shownText(h)), after: excerpt(shownText(m)) });
     } else {
-      out.push({ code: 'TEXT_CHANGED', severity: 'error', direction: 'both', message: `The ${label(h)} text differs.`, html: side(h), markdown: side(m), before: excerpt(h.text), after: excerpt(m.text) });
+      out.push({ code: 'TEXT_CHANGED', severity: 'error', direction: 'both', message: `The ${label(h)} text differs.`, html: side(h), markdown: side(m), before: excerpt(shownText(h)), after: excerpt(shownText(m)) });
     }
   }
   // Any block can carry the list context of its item (a heading, code or a table that leads it, MP-06); the function
@@ -379,11 +389,11 @@ export function compare(html: Extraction, markdown: Extraction, options: { bothB
   for (const p of al.pairs) comparePair(findings, p, a[p.a]!, b[p.b]!, bothBases, lim.maxSimilarityWork);
   for (const i of al.unmatchedA) {
     const h = a[i]!;
-    findings.push({ code: 'BLOCK_MISSING', severity: 'error', direction: 'html_only', message: `The ${label(h)} is in the HTML but not in the Markdown.`, html: side(h), before: excerpt(h.type === 'code' ? (h.code ?? h.text) : h.text) });
+    findings.push({ code: 'BLOCK_MISSING', severity: 'error', direction: 'html_only', message: `The ${label(h)} is in the HTML but not in the Markdown.`, html: side(h), before: excerpt(h.type === 'code' ? (h.code ?? h.text) : shownText(h)) });
   }
   for (const j of al.unmatchedB) {
     const m = b[j]!;
-    findings.push({ code: 'BLOCK_ADDED', severity: 'error', direction: 'markdown_only', message: `The ${label(m)} is in the Markdown but not in the HTML.`, markdown: side(m), after: excerpt(m.type === 'code' ? (m.code ?? m.text) : m.text) });
+    findings.push({ code: 'BLOCK_ADDED', severity: 'error', direction: 'markdown_only', message: `The ${label(m)} is in the Markdown but not in the HTML.`, markdown: side(m), after: excerpt(m.type === 'code' ? (m.code ?? m.text) : shownText(m)) });
   }
 
   // Deterministic order: by HTML position, then Markdown position, then severity, then code.

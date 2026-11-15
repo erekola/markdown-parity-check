@@ -13,12 +13,55 @@ import { describe, it } from 'node:test';
 import { expandIPv6, isPublicIPv6 } from '../src/netguard.js';
 import { excerpt, insideHiddenUrlPart, insideParenUserinfo, maskHref, maskParenUserinfo, redactText, stripControlChars } from '../src/normalize.js';
 
-const OLD_URL_IN_TEXT = /(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"'()]+|www\.[^\s<>"'()]+|(?<![\w/])\/[^\s<>"'()]*[?#][^\s<>"'()]*|[^\s<>"'()]*\?[\w%.-]+=[^\s<>"'()]*|[\/\\]{2}[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*|(?:https?|ftp|wss?|file):[\/\\]*[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*)/giu;
+const OLD_URL_IN_TEXT = /(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"'()]+|www\.[^\s<>"'()]+|(?<![\w/])\/[^\s<>"'()]*[?#][^\s<>"'()]*|[^\s<>"'()]*\?[\w%.-]+=[^\s<>"'()]*|[\/\\]{2}[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*|(?:https?|ftp|wss?|file):[\/\\]*[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*|(?<![\w.-])(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:[a-z0-9_-]+\.)+(?:[a-z]{2,}|xn--[a-z0-9-]+))(?::\d+)?(?:[\/\\]|#(?=[^\s<>"'()]*=))[^\s<>"'()]*)/giu;
+
+// 0.2.39: the user information of every "scheme://authority", whatever follows "://" and whatever precedes the scheme.
+// The reference is one regular expression: the user information is the text between "://" and the last "@" before the
+// next slash, backslash, question mark, number sign or white space.
+const OLD_AUTHORITY_USERINFO = /(?<=[a-z][a-z0-9+.-]*:\/\/)[^\/\\?#]*/giu;
+
+// The authority of the reference above, read as the text report reads it: a tab, a line feed or a carriage return does
+// not end it, and nor does other white space when the text up to the last "@" holds a colon that is not followed by
+// white space. The authority does not go on past white space that follows a port (one to five digits after the last
+// colon) or the end of a bracketed host: what comes after is text.
+function oldMaskAuthority(text: string): string {
+  return text.replace(OLD_AUTHORITY_USERINFO, (whole) => {
+    let region = whole;
+    let rest = '';
+    const first = region.search(/\s/u);
+    if (first >= 0) {
+      const colon = region.lastIndexOf(':', first - 1);
+      if ((colon >= 0 && /^\d{1,5}$/.test(region.slice(colon + 1, first))) || region[first - 1] === ']') {
+        rest = region.slice(first);
+        region = region.slice(0, first);
+      }
+    }
+    const space = region.search(/[^\S\t\n\r]/u);
+    const stop = space < 0 ? region.length : space;
+    let at = stop === 0 ? -1 : region.lastIndexOf('@', stop - 1);
+    const last = region.lastIndexOf('@');
+    if (space >= 0 && last > space && /:(?!\s)/u.test(region.slice(0, last))) at = last;
+    return (at < 0 ? region : '***@' + region.slice(at + 1)) + rest;
+  });
+}
+
+// 0.2.39: a bare host with a path hides its query and its fragment only when they hold an equals sign.
+const OLD_BARE_HOST_START = /^(?!www\.)(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:[a-z0-9_-]+\.)+(?:[a-z]{2,}|xn--[a-z0-9-]+))(?::\d+)?[\/\\#]/iu;
+function oldMaskUrl(url: string): string {
+  if (!OLD_BARE_HOST_START.test(url)) return maskHref(url);
+  const hash = url.indexOf('#');
+  const fragment = hash < 0 ? '' : url.slice(hash);
+  const head = hash < 0 ? url : url.slice(0, hash);
+  const queryHasValue = /\?[^]*=/.test(head);
+  const hideFragment = fragment.includes('=');
+  if (!queryHasValue && !hideFragment) return url;
+  return (queryHasValue ? maskHref(head) : head) + (hideFragment ? '' : fragment);
+}
 
 const OLD_URL_IN_TOKEN = new RegExp(`(?:${OLD_URL_IN_TEXT.source})[^\\s<>]*`, 'giu');
 
 function oldRedactText(text: string): string {
-  const pre = maskParenUserinfo(text);
+  const pre = oldMaskAuthority(maskParenUserinfo(stripControlChars(text)));
   const out = pre.replace(OLD_URL_IN_TOKEN, (m) => {
     const open = (m.match(/\(/g) ?? []).length;
     let close = (m.match(/\)/g) ?? []).length;
@@ -31,7 +74,7 @@ function oldRedactText(text: string): string {
         end--;
       } else break;
     }
-    return maskHref(m.slice(0, end)) + m.slice(end);
+    return oldMaskUrl(m.slice(0, end)) + m.slice(end);
   });
   return stripControlChars(out);
 }
@@ -89,6 +132,12 @@ const TEXT_PIECES = [
   '\u0130', '\u0131', '\u00e9', '\ud83d\ude00', '\ud83d', '\ude00',
 ];
 const IP_PIECES = ['0', '1', '9', '12', '255', '256', '01', '.', ':', '::', 'a', 'f', 'F', 'ffff', '%', 'eth0', 'x', ' '];
+// 0.2.39: bare host names with a path (the alternative added for a host without a scheme) and pieces that put a user
+// name next to a scheme, so the random texts reach the two passes the reference carries as its last two additions.
+TEXT_PIECES.push('ex.com/', 'a.b.cd:8080/', '1.2/', '-a.io/', 'x.y', '.org#', 'user@host.net/');
+// And the hosts the widened rule reads: an IPv4 address, localhost, a punycode label and an underscore, with a
+// fragment that holds an equals sign or does not, and white space inside an authority.
+TEXT_PIECES.push('1.2.3.4', 'localhost', 'localho\u017ft', 'xn--p1ai', 'a_b.', '.com#', '#x=1', '#x', '://u', ':p', '\ufeff', '\u3000');
 
 describe('linear-time redaction and address parsing (0.2.2)', () => {
   it('redactText gives the same result as the old expression on random text', () => {
@@ -167,6 +216,14 @@ describe('linear-time redaction and address parsing (0.2.2)', () => {
       ['special schemes', 'ftp:/https:'.repeat(N / 11)],
       ['special schemes without separators', 'https:'.repeat(N / 6)],
       ['query value and parentheses', 'https://a/?q=' + ')('.repeat(N / 2)],
+      // 0.2.39: the authority pass and the bare host alternative.
+      ['quote after the scheme separator', 'https://"'.repeat(N / 9)],
+      ['long authority without user information', 'a://' + 'x'.repeat(N)],
+      ['long authority with one at sign', 'a://' + 'x'.repeat(N) + '@h'],
+      ['scheme separators in a row', '://'.repeat(N / 3)],
+      ['dotted labels', 'a.'.repeat(N / 2) + 'bc/x'],
+      ['bare hosts', 'a.bc/'.repeat(N / 5)],
+      ['hyphens and dots', '-.'.repeat(N / 2)],
     ];
     for (const [name, text] of inputs) {
       const t0 = performance.now();

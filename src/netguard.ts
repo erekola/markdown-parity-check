@@ -147,7 +147,10 @@ export function isPublicIPv6(ip: string): boolean {
   if (g0 === 0x0100 && g1 === 0 && g2 === 0 && g3 === 1) return false; // 100:0:0:1::/64 dummy prefix
   if (g0 === 0x2002) return isPublicIPv4(v4FromGroups(g1, g2)); // 6to4
   if (g0 === 0x0100 && g1 === 0 && g2 === 0 && g3 === 0) return false; // 100::/64 discard
-  return true;
+  // Only 2000::/3 is global unicast space that the IANA has allocated, so it is the one block that is public unless a
+  // check above refused it. Every other block is reserved or special, and a form such as 0:1::1 or 8000::1, which the
+  // deny list of up to 0.2.38 let through, has no route on the internet.
+  return (g0 & 0xe000) === 0x2000;
 }
 
 /**
@@ -177,7 +180,13 @@ export function isPublicAddress(ip: string): boolean {
   return false;
 }
 
-/** Throws when the host name itself is a non-public literal or a local name. */
+/**
+ * Throws when the host name itself is a non-public literal or a local name. The argument is the host name as the URL
+ * parser writes it, `url.hostname` of a parsed `URL`: the parser has already turned a literal in another notation, such
+ * as 2130706433, 0x7f.0.0.1 or 127.1, into dotted decimal. A string that did not go through the parser is not read
+ * that way here. The package's own fetch passes `url.hostname` and then checks every resolved address with
+ * assertPublicResolved, and a caller that fetches on its own does the same.
+ */
 export function assertPublicHost(hostname: string): void {
   let h = hostname.toLowerCase().replace(/\.$/, '');
   if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1);

@@ -5,6 +5,9 @@ export type BlockType = 'heading' | 'paragraph' | 'listItem' | 'table' | 'code';
 export interface Link {
   /** Visible anchor text, strictly normalized. */
   text: string;
+  /** The anchor text as a report shows it, set only when the credential masking needs the white space the comparison
+   * text has lost. Never compared. */
+  shown?: string;
   /** Href as the parser returned it, with character references decoded, before resolution against a base URL. */
   rawHref: string;
   /** Href resolved against the document base, or null when it could not be resolved. */
@@ -27,12 +30,17 @@ export interface Block {
   type: BlockType;
   /** Comparison text after strictNormalize: case kept, NFC applied, ZERO_WIDTH characters removed, whitespace collapsed. */
   text: string;
+  /** The text as a report shows it, set only when the credential masking needs the white space the comparison text
+   * has lost (a credential with a tab or a line break inside it). Never compared, never aligned. */
+  shown?: string;
   /** Loosely normalized text, used for alignment and to classify minor text differences. */
   loose: string;
   /** Heading depth 1..6 for headings. */
   depth?: number;
   /** Table cells row by row, strictly normalized. Only for type 'table'. */
   cells?: string[][];
+  /** The cells as a report shows them, set together with shown. Never compared. */
+  cellsShown?: string[][];
   /** Only for type 'table', HTML side: a cell carries a rowspan or colspan, so a plain row/column reading cannot
    * place its value reliably. compare.ts skips the cell-by-cell check for this block and relies on the
    * EXTRACTION_TABLE_SPAN_NOT_COMPARED issue extraction already raised (0.2.16). */

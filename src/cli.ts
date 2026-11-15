@@ -120,6 +120,15 @@ const MAX_TIMEOUT_MS = 2147483647;
  * marks or hashes come before it, as the hosted maskLocation does. What follows the last '@' has its query values
  * masked and its fragment dropped. */
 function maskOption(value: string): string {
+  return oneLineText(maskOptionRaw(value));
+}
+
+/** A line feed or a carriage return of an argument, written as \n or \r, so an error stays one line on stderr. */
+function oneLineText(value: string): string {
+  return value.replace(/[\r\n]/g, (c) => (c === '\n' ? '\\n' : '\\r'));
+}
+
+function maskOptionRaw(value: string): string {
   const plain = value.replace(/[\t\n\r]/g, '');
   let hasHost = false;
   try {
@@ -133,6 +142,43 @@ function maskOption(value: string): string {
   const stop = rest.search(/[?#]/);
   const tail = stop < 0 ? rest : rest.slice(0, stop) + (rest[stop] === '?' ? '?***' : '');
   return '***@' + tail;
+}
+
+/** A value from the command line, as an error may repeat it. A path is shown as it is. Anything that holds an '@', a
+ * question mark, a number sign or "://" goes through maskOption in one piece: the run-based masking of redactText cuts a
+ * value at a raw space, and the part after it, such as the end of a password, reached the output unmasked
+ * (0.2.39, found by an outside review 2026-11-14). */
+function echoValue(value: string): string {
+  return /[@?#]|:\/\//.test(value) ? maskOption(value) : oneLineText(value);
+}
+
+/** What the system says of a failed file operation, without the path it quotes: the path is the argument, echoed on its
+ * own through echoValue, and the system's copy of it is the resolved form that no masking recognises. */
+function errnoText(err: unknown): string {
+  const message = (err as Error).message;
+  const quote = message.indexOf("'");
+  return (quote < 0 ? message : message.slice(0, quote)).trim();
+}
+
+/** The message of an argument error. A positional argument is echoed by Node's own message, so it is masked here. */
+function argumentError(err: Error & { code?: string }): string {
+  if (err.code === 'ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL') {
+    const m = /^Unexpected argument '([\s\S]*)'\. This command does not take positional arguments/.exec(err.message);
+    return m ? `Unexpected argument '${echoValue(m[1]!)}'. This command does not take positional arguments` : 'Unexpected argument; its value is not shown.';
+  }
+  if (err.code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION') {
+    // The name of an unknown option is the argument as it was typed, so it is masked like a value.
+    const m = /^Unknown option '([\s\S]*)'$/.exec(err.message);
+    return m ? `Unknown option '${echoValue(m[1]!)}'` : 'Unknown option; its name is not shown.';
+  }
+  return err.message;
+}
+
+/** Text for stderr: every line break but the one that ends the text is written as \n or \r, so an argument that an
+ * error repeats cannot add a line, whichever option or error repeats it. */
+function oneLineStderr(text: string): string {
+  const end = text.endsWith('\n') ? text.length - 1 : text.length;
+  return oneLineText(text.slice(0, end)) + text.slice(end);
 }
 
 function positiveInt(name: string, raw: string | undefined, fallback: number, max = Number.MAX_SAFE_INTEGER): number {
@@ -178,7 +224,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
       },
     });
   } catch (err) {
-    throw new CliError((err as Error).message);
+    throw new CliError(argumentError(err as Error & { code?: string }));
   }
   const v = parsed.values;
   const htmlProfile = v['html-profile'];
@@ -237,10 +283,42 @@ export function parseCliArgs(argv: string[]): CliArgs {
   if (args.output !== undefined) {
     const out = path.resolve(args.output);
     for (const input of [args.htmlFile, args.markdownFile]) {
-      if (input !== undefined && (samePath(out, path.resolve(input)) || sameFile(out, path.resolve(input)))) throw new CliError(`--output must not point at an input file (${args.output}).`);
+      if (input !== undefined && (samePath(out, path.resolve(input)) || sameFile(out, path.resolve(input)))) throw new CliError(`--output must not point at an input file (${echoValue(args.output)}).`);
     }
   }
   return args;
+}
+
+/**
+ * Whether the module file is the entry point Node was started with. process.argv[1] is the path as it was typed,
+ * made absolute and nothing more, so `node dist/src/cli` gives a path without the .js extension that the module file
+ * has, and up to 0.2.38 the two did not compare equal: the command ran no code and exited 0 without a word. The path
+ * is compared as it is and with .js added, each followed through realpath where the file exists (a link such as
+ * node_modules/.bin/markdown-parity-check names the file it points at), and without regard to case where the file
+ * system is case-insensitive. The path functions can be passed in, so the check is tested on POSIX and Windows paths
+ * on any system.
+ */
+export function isEntryPoint(
+  argv1: string | undefined,
+  moduleFile: string,
+  deps: { resolve?: (p: string) => string; realpath?: (p: string) => string; caseInsensitive?: boolean } = {},
+): boolean {
+  if (argv1 === undefined || argv1 === '') return false;
+  const resolve = deps.resolve ?? ((p: string) => path.resolve(p));
+  const realpath = deps.realpath ?? ((p: string) => fs.realpathSync.native(p));
+  const fold = deps.caseInsensitive ?? process.platform === 'win32';
+  const norm = (p: string): string => {
+    let real = p;
+    try {
+      real = realpath(p);
+    } catch {
+      // The file does not exist under this name, as for a path typed without its extension: compare the name as it is.
+    }
+    return fold ? real.toLowerCase() : real;
+  };
+  const target = norm(moduleFile);
+  const typed = resolve(argv1);
+  return norm(typed) === target || norm(`${typed}.js`) === target;
 }
 
 function samePath(a: string, b: string): boolean {
@@ -277,7 +355,7 @@ function readFileInput(file: string, base: string | null): SourceInput {
   try {
     body = fs.readFileSync(file, 'utf8');
   } catch (err) {
-    throw new CliError(`Cannot read ${file}: ${(err as NodeJS.ErrnoException).message}`);
+    throw new CliError(`Cannot read ${echoValue(file)}: ${errnoText(err)}`);
   }
   if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
   return { meta: { kind: 'file', file, bytes: Buffer.byteLength(body, 'utf8'), baseUrl: base ? maskUrl(base) : null }, body, base };
@@ -318,7 +396,7 @@ function emit(report: Report, args: CliArgs, io: CliIo): void {
     } catch {
       // Nothing more to do: the error below names the target.
     }
-    throw new CliError(`Cannot write report to ${args.output}: ${(err as NodeJS.ErrnoException).message}`);
+    throw new CliError(`Cannot write report to ${echoValue(args.output)}: ${errnoText(err)}`);
   }
   io.stderr(`Report written to ${args.output} (${report.summary.result.toUpperCase()}, exit ${report.summary.exitCode}).\n`);
 }
@@ -335,7 +413,7 @@ export async function main(argv: string[], io: CliIo = { stdout: (s) => process.
   // gave or a header a server sent, and up to 0.2.11 stderr printed both as they were (found by an outside review
   // 2026-09-26).
   const raw = io;
-  io = { stdout: raw.stdout, stderr: (s) => raw.stderr(redactText(s)) };
+  io = { stdout: raw.stdout, stderr: (s) => raw.stderr(oneLineStderr(redactText(s))) };
   let args: CliArgs;
   try {
     args = parseCliArgs(argv);
@@ -417,7 +495,7 @@ export async function main(argv: string[], io: CliIo = { stdout: (s) => process.
   return report.summary.exitCode;
 }
 
-const invokedDirectly = process.argv[1] !== undefined && samePath(path.resolve(process.argv[1]), fileURLToPath(import.meta.url));
+const invokedDirectly = isEntryPoint(process.argv[1], fileURLToPath(import.meta.url));
 if (invokedDirectly) {
   // A reader that closes the pipe before the report is written (head -c 0, a pager that quit) makes the write fail with
   // EPIPE. The report could not be delivered, which is a failed run: exit 2, as for every other report that cannot be
@@ -427,7 +505,7 @@ if (invokedDirectly) {
     outputFailed = true;
     process.exitCode = 2;
     try {
-      process.stderr.write(redactText(`Error: Cannot write the report to stdout: ${err.code ?? err.message}\n`));
+      process.stderr.write(oneLineStderr(redactText(`Error: Cannot write the report to stdout: ${err.code ?? err.message}\n`)));
     } catch {
       // stderr may be closed as well; the exit code carries the failure.
     }
