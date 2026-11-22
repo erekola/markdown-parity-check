@@ -29,6 +29,9 @@ export interface SourceInput {
   body: string;
   /** Unmasked base URL for link resolution; never written to the report. */
   base: string | null;
+  /** The base came from a redirect whose Location hides user information, so links resolved against it are shown as
+   * written (fetchUrl sets shownFinalUrl then). */
+  baseMasked?: boolean;
 }
 
 export interface RunOptions {
@@ -203,13 +206,13 @@ export function run(html: SourceInput, markdown: SourceInput, options: RunOption
   if (typeof maxDepth !== 'number' || Number.isNaN(maxDepth) || maxDepth <= 0) throw new TypeError(`Limit maxNestingDepth must be a positive number (got ${String(maxDepth)}).`);
   let h: Extraction;
   try {
-    h = extractHtml(html.body, { profile: options.htmlProfile, selector: options.selector, baseUrl: html.base, maxDepth });
+    h = extractHtml(html.body, { profile: options.htmlProfile, selector: options.selector, baseUrl: html.base, baseMasked: html.baseMasked ?? false, maxDepth });
   } catch (err) {
     throw extractionError('HTML', err) ?? err;
   }
   let m: Extraction;
   try {
-    m = extractMarkdown(markdown.body, { baseUrl: markdown.base, frontMatter: options.frontMatter ?? 'keep', maxDepth });
+    m = extractMarkdown(markdown.body, { baseUrl: markdown.base, baseMasked: markdown.baseMasked ?? false, frontMatter: options.frontMatter ?? 'keep', maxDepth });
   } catch (err) {
     throw extractionError('Markdown', err) ?? err;
   }

@@ -8,10 +8,12 @@ import type { Block, Extraction, ExtractionIssue, Link, ListInfo } from './model
 import { BLOCK_TAGS, extractHtml, HtmlDepthError, MAX_NESTING_DEPTH, opensExcludedSubtree } from './html.js';
 import { parseDocument, Parser } from 'htmlparser2';
 import { Element, Text, type ChildNode } from 'domhandler';
-import { bareUserinfoSpansOf, excerpt, extractNumbers, insideHiddenUrlPart, insideUserinfoSpan, LinkTargetError, looseNormalize, MAX_LINK_TARGET_CHARS, normalizeCode, resolveHref, shownField, shownNormalize, strictNormalize, userinfoSpansOf, type UserinfoSpan } from './normalize.js';
+import { bareUserinfoSpansOf, excerpt, extractNumbers, insideHiddenUrlPart, insideUserinfoSpan, LinkTargetError, looseNormalize, markBaseMaskedLinks, MAX_LINK_TARGET_CHARS, normalizeCode, resolveHref, shownField, shownNormalize, strictNormalize, userinfoSpansOf, type UserinfoSpan } from './normalize.js';
 
 export interface MarkdownExtractOptions {
   baseUrl?: string | null;
+  /** The base came from a redirect whose Location hides user information (markBaseMaskedLinks). */
+  baseMasked?: boolean;
   /**
    * 'keep' (default): nothing is removed; a document that starts with a fence that looks like YAML front
    * matter is compared as written and flagged with a warning. 'strip': the user has said the document
@@ -632,5 +634,6 @@ export function extractMarkdown(source: string, options: MarkdownExtractOptions 
     for (const b of ctx.blocks) if (b.location.line !== undefined) b.location.line += fm.skippedLines;
     for (const i of ctx.issues) if (i.code !== 'MARKDOWN_FRONT_MATTER_STRIPPED' && i.line !== undefined) i.line += fm.skippedLines;
   }
+  markBaseMaskedLinks(ctx.blocks, [options.baseUrl], options.baseMasked ?? false);
   return { blocks: ctx.blocks, strategy: 'markdown', confidence: 'high', notes: ctx.notes, issues: ctx.issues };
 }

@@ -1060,6 +1060,10 @@ const EDGE_INVISIBLE = new RegExp('^[\\s' + String.fromCharCode(0x85, 0x180e, 0x
  *   target as a relative path. Only *** is shown then.
  * - a relative target with a "?" or "#" before its last "@" and a colon between them, as in `u?x:secret@host`,
  *   which put the secret into a query name. Only *** is shown.
+ * - a relative target with no "/" before its last "@" and a colon before that "@", when no scheme word stands before
+ *   the colon: a Windows domain user as in `CORP\erik:secret@host/p`, an empty user name as in `:secret@host/p` and an
+ *   "@" in the user name as in `erik@:secret@host/p`. The parser resolves each of them as a path, and maskBareUserinfo
+ *   needs a label. Only *** is shown (independent rerun of 0.2.41, 2026-11-22).
  *
  * Not masked, and named in the README: a password that starts with "/" or with digits and "/", as in
  * `https://user:/secret@host`, which the parser reads as a host, a port and a path and which text alone cannot tell
@@ -1087,8 +1091,13 @@ export function movedUserinfoMask(written: string): string | null {
     if (word === null) {
       // A relative target with a ? or # before its last @ and a colon between them, as in u?x:secret@host, put the
       // secret into a query name against a base (fifth check), so nothing of it is shown.
+      const lastAt = h.lastIndexOf('@');
       const cut = h.search(/[?#]/);
-      return cut >= 0 && h.slice(cut, h.lastIndexOf('@')).includes(':') ? '***' : null;
+      if (cut >= 0 && h.slice(cut, lastAt).includes(':')) return '***';
+      // A colon before the last @ and no slash before it, with no scheme word in front of the colon: CORP\erik:secret@,
+      // :secret@ and erik@:secret@ resolved as a path and were shown whole (n3 to n5 of the rerun of 0.2.41).
+      const before = h.slice(0, lastAt);
+      return before.includes(':') && !before.includes('/') ? '***' : null;
     }
     if (special) return shown;
     return rest.slice(0, rest.lastIndexOf('@')).includes(':') ? `${name}:***` : null;
@@ -1110,6 +1119,29 @@ export function movedUserinfoMask(written: string): string | null {
     return shown;
   }
   return null;
+}
+
+/**
+ * Marks the links of the blocks whose written target is relative, when the base they were resolved against hides user
+ * information: either baseMasked says so (a base that a redirect with such a Location produced) or movedUserinfoMask
+ * reads the base itself as one of its shapes, as in `https://CORP\erik:secret@host/dir/`. The parser reads that base
+ * as host "corp" and the user information as its path, so every relative link resolved against it carried the secret,
+ * and a report showed it (n6 of the rerun of 0.2.41, 2026-11-22). A marked link is shown as it was written, not as it
+ * was resolved. Display only: the comparison keeps the resolved target.
+ */
+export function markBaseMaskedLinks(blocks: ReadonlyArray<{ links: Array<{ rawHref: string; baseMasked?: boolean }> }>, bases: ReadonlyArray<string | null | undefined>, baseMasked: boolean): void {
+  if (!baseMasked && !bases.some((b) => typeof b === 'string' && movedUserinfoMask(b) !== null)) return;
+  for (const block of blocks) {
+    for (const link of block.links) {
+      let absolute = false;
+      try {
+        absolute = resolveHref(link.rawHref, null) !== null;
+      } catch {
+        absolute = false;
+      }
+      if (!absolute) link.baseMasked = true;
+    }
+  }
 }
 
 /**

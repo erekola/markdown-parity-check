@@ -10,7 +10,7 @@ import zlib from 'node:zlib';
 import type { Readable } from 'node:stream';
 import type { LookupFunction } from 'node:net';
 import { assertPublicHost, assertPublicResolved, BlockedAddressError, ipVersion } from './netguard.js';
-import { maskUrl, redactText } from './normalize.js';
+import { maskBareUserinfo, maskUrl, movedUserinfoMask, redactText } from './normalize.js';
 import { TOOL_NAME, TOOL_VERSION } from './version.js';
 
 export type FetchErrorKind = 'invalid_url' | 'blocked' | 'timeout' | 'too_large' | 'redirect_loop' | 'too_many_redirects' | 'network' | 'protocol';
@@ -22,7 +22,10 @@ export class FetchError extends Error {
     super(message);
     this.name = 'FetchError';
     this.kind = kind;
-    this.url = maskUrl(url);
+    // movedUserinfoMask first: maskUrl showed --url 'CORP\erik:secret@host/p' as given (F2 of the seventh check).
+    // maskBareUserinfo after maskUrl: a refused user:secret@host.example/p, as a --url or a Location, is a URL with the
+    // scheme "user" and no authority, so maskUrl kept it whole (finding 1 of the tenth check).
+    this.url = movedUserinfoMask(url) ?? maskBareUserinfo(maskUrl(url));
   }
 }
 
@@ -56,6 +59,10 @@ export interface FetchResult {
   bytes: number;
   redirects: number;
   accept: string;
+  /** Set only when a followed redirect wrote a Location that movedUserinfoMask reads as hiding user information, as
+   * in user_name:secret@host.example. The final address then carries that text in its path, so a report shows this,
+   * the scheme, two slashes, three asterisks and a slash, in its place, and the links resolved against it as written. */
+  shownFinalUrl?: string;
 }
 
 const defaultResolver: Resolver = async (hostname) => {
@@ -68,7 +75,7 @@ export function validateUrl(input: string): URL {
   try {
     u = new URL(input);
   } catch {
-    throw new FetchError('invalid_url', input, `Not a valid absolute URL: ${maskUrl(input)}`);
+    throw new FetchError('invalid_url', input, `Not a valid absolute URL: ${movedUserinfoMask(input) ?? maskUrl(input)}`);
   }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') {
     throw new FetchError('protocol', input, `Only http and https URLs are fetched (got ${u.protocol}).`);
@@ -422,28 +429,49 @@ async function fetchWithDeadline(input: string, options: FetchOptions, maxRedire
   let url = validateUrl(input);
   const visited = new Set<string>();
   let redirects = 0;
+  // A followed Location that movedUserinfoMask reads as hiding user information, as user_name:secret@host.example,
+  // resolves into a path that holds the secret, and every later address keeps it. From that hop on the address is
+  // named as its scheme and "//***/", in an error as in the result (the class of n1 of the independent rerun of
+  // 2026-11-22, found in this fetch by reading it).
+  // A typed --url of these shapes, as in http://host.example:8080\erik:secret@other.example/p, which the parser reads as
+  // a host, a port and a path, is named the same way from the first request on (L1 of the ninth check).
+  let shown: string | null = movedUserinfoMask(input) !== null ? `${url.protocol}//***/` : null;
+  const named = (u: URL) => shown ?? maskUrl(u.href);
   for (;;) {
-    if (visited.has(url.href)) throw new FetchError('redirect_loop', url.href, `Redirect loop detected at ${maskUrl(url.href)}.`);
+    if (visited.has(url.href)) throw new FetchError('redirect_loop', shown === null ? url.href : shown, `Redirect loop detected at ${named(url)}.`);
     visited.add(url.href);
     let address: { address: string; family: 4 | 6 };
+    let res: Awaited<ReturnType<typeof requestOnce>>;
     try {
-      address = await deadline.race(pickAddress(url.hostname, options));
+      try {
+        address = await deadline.race(pickAddress(url.hostname, options));
+      } catch (err) {
+        if (err instanceof BlockedAddressError) throw new FetchError('blocked', url.href, err.message);
+        throw err;
+      }
+      res = await deadline.race(requestOnce(url, address, options, deadline));
     } catch (err) {
-      if (err instanceof BlockedAddressError) throw new FetchError('blocked', url.href, err.message);
+      if (shown !== null && err instanceof FetchError) err.url = shown;
       throw err;
     }
-    const res = await deadline.race(requestOnce(url, address, options, deadline));
     if (REDIRECT_STATUSES.has(res.status)) {
       const loc = res.headers['location'];
-      if (!loc) throw new FetchError('protocol', url.href, `HTTP ${res.status} without a Location header.`);
-      if (redirects >= maxRedirects) throw new FetchError('too_many_redirects', url.href, `More than ${maxRedirects} redirects.`);
+      // Both name the address after a hiding hop as shown, not as resolved (N1 of the eighth check).
+      if (!loc) throw new FetchError('protocol', shown === null ? url.href : shown, `HTTP ${res.status} without a Location header.`);
+      if (redirects >= maxRedirects) throw new FetchError('too_many_redirects', shown === null ? url.href : shown, `More than ${maxRedirects} redirects.`);
       let next: URL;
       try {
         next = new URL(loc, url);
       } catch {
-        throw new FetchError('protocol', url.href, `Invalid redirect target: ${maskUrl(loc)}`);
+        throw new FetchError('protocol', shown === null ? url.href : shown, `Invalid redirect target: ${movedUserinfoMask(loc) ?? maskUrl(loc)}`);
       }
-      url = validateUrl(next.href);
+      if (shown === null && movedUserinfoMask(loc) !== null) shown = `${next.protocol}//***/`;
+      try {
+        url = validateUrl(next.href);
+      } catch (err) {
+        if (shown !== null && err instanceof FetchError) err.url = shown;
+        throw err;
+      }
       redirects++;
       continue;
     }
@@ -457,6 +485,7 @@ async function fetchWithDeadline(input: string, options: FetchOptions, maxRedire
       bytes: res.bytes,
       redirects,
       accept: options.accept,
+      ...(shown !== null ? { shownFinalUrl: shown } : {}),
     };
   }
 }

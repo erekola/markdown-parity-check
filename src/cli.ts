@@ -10,7 +10,7 @@ import { fetchUrl, FetchError, validateUrl, type FetchOptions, type FetchResult 
 import { renderJson, renderText } from './report.js';
 import { runWithDeadline } from './deadline.js';
 import { errorReport, RunError, type Report, type RunOptions, type SourceInput } from './run.js';
-import { maskUrl, redactText } from './normalize.js';
+import { maskUrl, movedUserinfoMask, redactText } from './normalize.js';
 import { TOOL_NAME, TOOL_VERSION } from './version.js';
 
 export const HELP = `${TOOL_NAME} ${TOOL_VERSION}
@@ -358,17 +358,21 @@ function readFileInput(file: string, base: string | null): SourceInput {
     throw new CliError(`Cannot read ${echoValue(file)}: ${errnoText(err)}`);
   }
   if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
-  return { meta: { kind: 'file', file, bytes: Buffer.byteLength(body, 'utf8'), baseUrl: base ? maskUrl(base) : null }, body, base };
+  // movedUserinfoMask first: maskUrl showed https://CORP\erik:secret@host/dir/ as https://corp/erik:secret@host/dir/ (n6).
+  return { meta: { kind: 'file', file, bytes: Buffer.byteLength(body, 'utf8'), baseUrl: base ? movedUserinfoMask(base) ?? maskUrl(base) : null }, body, base };
 }
 
 export type FetchFn = (url: string, options: FetchOptions) => Promise<FetchResult>;
 
 async function fetchInput(url: string, accept: string, args: CliArgs, fetchFn: FetchFn): Promise<SourceInput> {
   const res = await fetchFn(url, { accept, timeoutMs: args.timeoutMs, maxBytes: args.maxBytes });
+  // shownFinalUrl stands in for the final address when a redirect hid user information in it (fetchUrl).
+  const shownFinal = res.shownFinalUrl ?? maskUrl(res.finalUrl);
   return {
-    meta: { kind: 'url', url: maskUrl(res.finalUrl), requestedUrl: maskUrl(url), status: res.status, contentType: res.contentType, accept, redirects: res.redirects, bytes: res.bytes, baseUrl: maskUrl(res.finalUrl) },
+    meta: { kind: 'url', url: shownFinal, requestedUrl: movedUserinfoMask(url) ?? maskUrl(url), status: res.status, contentType: res.contentType, accept, redirects: res.redirects, bytes: res.bytes, baseUrl: shownFinal },
     body: res.body,
     base: res.finalUrl,
+    ...(res.shownFinalUrl !== undefined ? { baseMasked: true } : {}),
   };
 }
 

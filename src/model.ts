@@ -12,6 +12,9 @@ export interface Link {
   rawHref: string;
   /** Href resolved against the document base, or null when it could not be resolved. */
   resolved: string | null;
+  /** The base the target was resolved against hides user information, so a report shows rawHref in place of
+   * resolved (markBaseMaskedLinks). Never compared. */
+  baseMasked?: boolean;
   /** The link was made by GFM out of a hidden part of a URL (a query value, the fragment or user information), so
    * a report shows neither its text nor its target. See insideHiddenUrlPart in normalize.ts. */
   masked?: boolean;

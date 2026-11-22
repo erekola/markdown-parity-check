@@ -2,6 +2,16 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.42 (2026-11-22)
+
+Masking repairs after an independent rerun against 0.2.41. Only what a report shows changes. What is compared and every finding stay the same.
+
+- A link target without a scheme word before its colon that holds a colon and no `/` before its last `@` is shown as `***`. In 0.2.41 a Windows domain user as in `CORP\erik:password@host.example/x`, an empty user name as in `:password@host.example/x` and an `@` in the user name as in `erik@:password@host.example/x` were shown in full in every link finding, because the URL parser resolves them as a path. A single leading backslash, as in `\user:password@host.example/x`, is masked the same way.
+- A base address that hides user information, given as `--base-url` or written in a `<base href>`, as in `https://CORP\erik:password@host.example/dir/`, is shown as its scheme and `//***/` in the report header and in the JSON `sources`, and a relative link resolved against it is shown as written. In 0.2.41 the base and every resolved link showed the password in their path. A `meta.baseUrl` that a library caller passes is read the same way.
+- In the URL mode, a followed redirect whose `Location` reads as user information, as in `user_name:password@host.example`, makes the final address show as its scheme and `//***/`, in the report and in a fetch error after that hop, and the links resolved against it are shown as written. So does a `--url` of these shapes, as in `http://host.example:8080\erik:password@other.example/p`, which the URL parser reads as a host, a port and a path. `fetchUrl` returns that form in the new field `shownFinalUrl`, set only in these cases. In 0.2.41 the final address and the resolved links showed the password in their path, and a `--url` of these shapes showed it in the error text as well.
+- A refused `user:password@host.example/p`, as a `--url` or as a redirect `Location`, is shown as `user:***@host.example/p` in the fetch error, as the scheme-less form is in a report. In 0.2.41 the error showed it whole.
+- New test file: test/rerun-1122.test.ts.
+
 ## 0.2.41 (2026-11-22)
 
 This release changes what a report shows for some link targets. It moves no set of passing pairs: the masked value appears only in the text of a link finding and in its `before` and `after` values, so a finding code, a severity, a direction and an exit code are the same as in 0.2.40.

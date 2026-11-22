@@ -83,7 +83,8 @@ const linkText = (l: Link, other?: Link) => (l.masked || other?.masked ? '***' :
 // `user:secret@host.example#a=b` has no other delimiter, so after maskHref the shape would no longer be recognised.
 // movedUserinfoMask reads the written target first: a target such as `https:/user:secret@host.example/x` resolves
 // against a base of the same scheme into a path that holds the user information, and only the scheme is shown then.
-const linkHref = (l: Link, href: string) => (l.masked ? '***' : movedUserinfoMask(l.rawHref) ?? maskBareUserinfo(maskHref(maskBareUserinfo(href))));
+// A link resolved against a base that hides user information is shown as written (baseMasked, markBaseMaskedLinks).
+const linkHref = (l: Link, href: string) => (l.masked ? '***' : movedUserinfoMask(l.rawHref) ?? maskBareUserinfo(maskHref(maskBareUserinfo(l.baseMasked ? l.rawHref : href))));
 
 /**
  * Pairs the HTML block's links with the Markdown block's, in three steps.

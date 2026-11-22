@@ -5,7 +5,7 @@ import { parseDocument } from 'htmlparser2';
 import { selectAll, selectOne } from 'css-select';
 import { Element, Text, type AnyNode, type ChildNode, type Document, type ParentNode } from 'domhandler';
 import type { Block, Extraction, ExtractionIssue, Link, ListInfo } from './model.js';
-import { extractNumbers, looseNormalize, normalizeCode, redactText, resolveHref, shownField, shownNormalize, stripControlChars, strictNormalize } from './normalize.js';
+import { extractNumbers, looseNormalize, markBaseMaskedLinks, normalizeCode, redactText, resolveHref, shownField, shownNormalize, stripControlChars, strictNormalize } from './normalize.js';
 
 export interface HtmlExtractOptions {
   /** Opt-in component semantics. The default keeps generic HTML visibility rules. */
@@ -14,6 +14,8 @@ export interface HtmlExtractOptions {
   selector?: string;
   /** Base URL for resolving relative links; a <base href> in the document takes precedence. */
   baseUrl?: string | null;
+  /** The base came from a redirect whose Location hides user information (markBaseMaskedLinks). */
+  baseMasked?: boolean;
   /** Deepest element nesting accepted, counted from the document root. Default MAX_NESTING_DEPTH. */
   maxDepth?: number;
 }
@@ -819,5 +821,7 @@ export function extractHtml(source: string, options: HtmlExtractOptions = {}): E
   // branch reads only <li> children, and a root list would lose any other content it holds.
   if (HEADING_RE.test(root.name) || root.name === 'li' || root.name === 'table' || root.name === 'pre' || (profile === 'starlight' && root.name === 'starlight-tabs')) handleBlock(ctx, root);
   else walk(ctx, root);
+  // The written <base href> is read too: its resolved form has lost the backslash that marks the shape.
+  markBaseMaskedLinks(ctx.blocks, [options.baseUrl, base, baseEl instanceof Element ? baseEl.attribs['href'] : null], options.baseMasked ?? false);
   return { blocks: ctx.blocks, strategy: profile === 'generic' ? strategy : `${strategy};profile:starlight`, confidence, notes, issues };
 }

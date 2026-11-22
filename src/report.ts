@@ -3,12 +3,29 @@
 import type { Finding } from './model.js';
 import type { Report, SourceMeta } from './run.js';
 import { TOOL_NAME } from './version.js';
-import { redactText } from './normalize.js';
+import { movedUserinfoMask, redactText } from './normalize.js';
 
 /** Reporting boundary: every string that leaves the tool goes through redactText. Internal comparison
  * has already happened on the original values. */
 export function redactReport(report: Report): Report {
-  return mapStrings(report, redactText);
+  return mapStrings(withSourceAddressesMasked(report), redactText);
+}
+
+/** The source addresses (url, requestedUrl and baseUrl of each side) read through movedUserinfoMask first. A library
+ * caller passes meta.baseUrl as it is, and redactText showed https://CORP\erik:secret@host/dir/ whole (n6 of the
+ * independent rerun of 0.2.41, 2026-11-22). Only fields that are there are touched. */
+function withSourceAddressesMasked(report: Report): Report {
+  if (!report || typeof report !== 'object' || !report.sources) return report;
+  const mask = (s: SourceMeta | undefined): SourceMeta | undefined => {
+    if (!s || typeof s !== 'object') return s;
+    const out: SourceMeta = { ...s };
+    for (const k of ['url', 'requestedUrl', 'baseUrl'] as const) {
+      const v = out[k];
+      if (typeof v === 'string') out[k] = movedUserinfoMask(v) ?? v;
+    }
+    return out;
+  };
+  return { ...report, sources: { ...report.sources, html: mask(report.sources.html)!, markdown: mask(report.sources.markdown)! } };
 }
 
 /** A copy of the value with fn applied to every string in it, however deep. */
