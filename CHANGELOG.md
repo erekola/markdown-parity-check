@@ -2,6 +2,16 @@
 
 Each section is the change list of one release. The release workflow uses the section of the released version as the GitHub release notes and stops the release when that section is missing.
 
+## 0.2.41 (2026-11-22)
+
+This release changes what a report shows for some link targets. It moves no set of passing pairs: the masked value appears only in the text of a link finding and in its `before` and `after` values, so a finding code, a severity, a direction and an exit code are the same as in 0.2.40.
+
+- Credential masking, P3-1: a link target written with `http:`, `https:` or another special scheme and fewer than two slashes or backslashes after the colon, as in `https:/user:secret@host.example/x`, reached a report in 0.2.40. Against a base of the same scheme the URL parser reads such a target as a relative path, so the resolved target was `https://example.com/user:secret@host.example/x`, and the user information sat in its path, where the masking found none. A target of this form that holds an `@` anywhere is now shown as `https://***/`, with no host, in every link finding of the text and JSON reports. A harmless target of this form with an `@` in its query, such as `https:/docs/x?mail=a@b.com`, is shown the same way, because its written form cannot be told from user information that holds a `?`. Found by an outside fuzz run of 0.2.40 on 2026-11-22.
+- Credential masking, authority: a target with two or more slashes or backslashes where a backslash, a `?` or a `#` comes before its last `@` and before any `/` is shown as its scheme and `//***`. In 0.2.40 `https://CORP\erik:secret@host.example/x` was read as the host `corp` and shown as `https://corp/erik:secret@host.example/x`, and `https://user:x?secret@host.example/x` showed the secret as a query name. `https://example.com?e=a@b.com` is shown as `https://***/` as well. So is an authority that the URL parser refuses, as with the port in `https://user:pa/ss?secret@host.example/x`.
+- Credential masking, other shapes: a `file:` URL with an `@`, a scheme that the parser refuses, as in `user_name:secret@host.example`, a non-special scheme whose text before the `@` holds a colon, as in `gopher:user:secret@host.example`, and any of these after a leading Unicode space or a NUL character are masked too. The README names the two shapes that are still shown: a password that starts with `/`, and a relative path such as `/user:secret@host.example`.
+- Documentation: the README gives measured times for the table rule of the Markdown parser. A two-column table of 64 KiB took about 3 s.
+- Tests: test/review-1122.test.ts is new. It covers 36 written forms on the Markdown side, the HTML side or both, an http base, the command line on local files, and targets that must be shown as before.
+
 ## 0.2.40 (2026-11-15)
 
 This release changes what a report shows for one shape of text. It moves no set of passing pairs. A finding code, a severity, a direction and an exit code are the same as in 0.2.39 for every input.

@@ -1029,6 +1029,89 @@ export function maskHref(href: string): string {
 
 const SPECIAL_SCHEMES = new Set(['ftp', 'file', 'http', 'https', 'ws', 'wss']);
 
+/** Leading characters a reader does not see but the URL parser keeps: the Unicode white space, U+0085, U+180E,
+ * U+200B and U+FFFD, which the Markdown parser writes for a NUL. */
+const EDGE_INVISIBLE = new RegExp('^[\\s' + String.fromCharCode(0x85, 0x180e, 0x200b, 0xfffd) + ']+');
+
+/**
+ * What a report shows in place of a link target whose user information the URL parser and a person may read at
+ * different places, or null when maskHref and maskBareUserinfo show the target safely. It is decided from the written
+ * target alone, whatever the base, so one link reads the same in every finding, the way turva-llms-txt-validator
+ * shows an ambiguous address: only the scheme and "//***", or "***" when the text before the colon may itself be the
+ * user name. Found by an outside fuzz run of 0.2.40 on 2026-11-22 (P3-1) and by four independent checks of 0.2.41
+ * before release. Only a target that holds an "@" counts, and these shapes are masked:
+ *
+ * - a special scheme with fewer than two slashes or backslashes after its colon, as in `https:/user:secret@host/x`.
+ *   Against a base of the same scheme the parser reads a relative path, so `https://example.com/user:secret@host/x`
+ *   was shown.
+ * - an authority, after two slashes (or backslashes, for a special scheme or no scheme), with a backslash, "?" or "#"
+ *   before the last "@" and before the first "/", as in `https://CORP\erik:secret@host/x` or
+ *   `https://user:x?secret@host/x`. The parser ends the host there, so the secret was shown in a path or as a query
+ *   name. `https://example.com?e=a@b.com` reads the same way and is masked too.
+ * - an authority that the parser refuses, as with the port `pa` in `https://user:pa/ss?secret@host`.
+ * - a `file:` URL. Its host is empty, so `file:///user:secret@host` kept the user information in its path.
+ * - a non-special scheme with no "//", or with an empty authority as in `gopher:///user:secret@host`, whose text
+ *   before the last "@" holds a colon, as in `gopher:user:secret@host`, which the parser reads as an opaque path. Not
+ *   for an address scheme such as mailto, and not for `user:secret@host.example/p`, whose user name is the scheme
+ *   word and which maskBareUserinfo masks.
+ * - a scheme word that the parser refuses, as in `user_name:secret@host`, `my_app:user:secret@host` or
+ *   `ht tps:/user:secret@host`, which resolves as a relative path.
+ * - any target with an "@" after a leading Unicode space or U+FFFD, which the parser keeps, so it reads the whole
+ *   target as a relative path. Only *** is shown then.
+ * - a relative target with a "?" or "#" before its last "@" and a colon between them, as in `u?x:secret@host`,
+ *   which put the secret into a query name. Only *** is shown.
+ *
+ * Not masked, and named in the README: a password that starts with "/" or with digits and "/", as in
+ * `https://user:/secret@host`, which the parser reads as a host, a port and a path and which text alone cannot tell
+ * from a path that holds an "@", such as `https://localhost:8080/team@example.com`; and a relative path such as
+ * `/user:secret@host`, which both readers take as a path.
+ */
+export function movedUserinfoMask(written: string): string | null {
+  const own = urlParserInput(written);
+  const h = own.replace(EDGE_INVISIBLE, '');
+  if (!h.includes('@')) return null;
+  // A leading invisible character makes the parser read the whole target as a relative path, whatever follows it, so
+  // nothing of it is shown (fifth independent check: U+2003 before user:secret@host/p or https:///user:secret@host).
+  if (h !== own) return '***';
+  // The scheme word runs to the first colon unless a slash, backslash, ?, # or @ comes first, so "ht tps:" is a word
+  // the parser refuses, not a relative path (fifth check).
+  const word = /^([^\/\\?#@:]+):/.exec(h);
+  if (word !== null && !/^[a-z][a-z0-9+.-]*$/i.test(word[1]!)) return '***';
+  const name = word === null ? '' : word[1]!.toLowerCase();
+  if (ADDRESS_SCHEMES.has(name)) return null;
+  const special = word === null || SPECIAL_SCHEMES.has(name);
+  const rest = word === null ? h : h.slice(word[0].length);
+  const shown = word === null ? '//***' : `${name}://***`;
+  const isSlash = (c: number) => c === 0x2f || (special && c === 0x5c);
+  if (!(rest.length >= 2 && isSlash(rest.charCodeAt(0)) && isSlash(rest.charCodeAt(1)))) {
+    if (word === null) {
+      // A relative target with a ? or # before its last @ and a colon between them, as in u?x:secret@host, put the
+      // secret into a query name against a base (fifth check), so nothing of it is shown.
+      const cut = h.search(/[?#]/);
+      return cut >= 0 && h.slice(cut, h.lastIndexOf('@')).includes(':') ? '***' : null;
+    }
+    if (special) return shown;
+    return rest.slice(0, rest.lastIndexOf('@')).includes(':') ? `${name}:***` : null;
+  }
+  if (name === 'file') return shown;
+  // A non-special scheme with an empty authority, as in gopher:///user:secret@host, keeps the rest in its path.
+  if (!special && rest.charCodeAt(2) === 0x2f) return `${name}:***`;
+  let k = 2;
+  while (k < rest.length && isSlash(rest.charCodeAt(k))) k++;
+  const tail = rest.slice(k);
+  const lastAt = tail.lastIndexOf('@');
+  if (lastAt <= 0) return null;
+  const slash = tail.indexOf('/');
+  const end = slash >= 0 && slash < lastAt ? slash : lastAt;
+  if (/[\\?#]/.test(tail.slice(0, end))) return shown;
+  try {
+    new URL(word === null ? `https:${h}` : h);
+  } catch {
+    return shown;
+  }
+  return null;
+}
+
 /**
  * The href without its user information. The authority is found where the URL parser looks for it: after
  * "scheme:" and any slashes or backslashes for a special scheme, after "//" for any other scheme, and after two

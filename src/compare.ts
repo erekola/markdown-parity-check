@@ -2,7 +2,7 @@
 
 import { align, resolveLimits, AlignmentLimitError, UNCERTAIN_THRESHOLD, type AlignmentLimits, type Pair } from './align.js';
 import type { Block, Extraction, Finding, FindingSide, Link } from './model.js';
-import { codeWhitespaceKey, excerpt, hrefDifference, looseNormalize, maskBareUserinfo, maskHref, redactText, relativeHrefRelation, textKey, trimHref, visibleNumbers } from './normalize.js';
+import { codeWhitespaceKey, excerpt, hrefDifference, looseNormalize, maskBareUserinfo, maskHref, movedUserinfoMask, redactText, relativeHrefRelation, textKey, trimHref, visibleNumbers } from './normalize.js';
 
 export interface Coverage {
   htmlBlocks: number;
@@ -81,7 +81,9 @@ export function diffNumbers(a: string[], b: string[]): { before: string[]; after
 const linkText = (l: Link, other?: Link) => (l.masked || other?.masked ? '***' : redactText(l.shown ?? l.text));
 // maskBareUserinfo runs before maskHref as well as after it: maskHref drops the fragment, and a target such as
 // `user:secret@host.example#a=b` has no other delimiter, so after maskHref the shape would no longer be recognised.
-const linkHref = (l: Link, href: string) => (l.masked ? '***' : maskBareUserinfo(maskHref(maskBareUserinfo(href))));
+// movedUserinfoMask reads the written target first: a target such as `https:/user:secret@host.example/x` resolves
+// against a base of the same scheme into a path that holds the user information, and only the scheme is shown then.
+const linkHref = (l: Link, href: string) => (l.masked ? '***' : movedUserinfoMask(l.rawHref) ?? maskBareUserinfo(maskHref(maskBareUserinfo(href))));
 
 /**
  * Pairs the HTML block's links with the Markdown block's, in three steps.
