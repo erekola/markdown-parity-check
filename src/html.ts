@@ -5,7 +5,7 @@ import { parseDocument } from 'htmlparser2';
 import { selectAll, selectOne } from 'css-select';
 import { Element, Text, type AnyNode, type ChildNode, type Document, type ParentNode } from 'domhandler';
 import type { Block, Extraction, ExtractionIssue, Link, ListInfo } from './model.js';
-import { extractNumbers, looseNormalize, markBaseMaskedLinks, normalizeCode, redactText, resolveHref, shownField, shownNormalize, stripControlChars, strictNormalize } from './normalize.js';
+import { extractNumbers, looseNormalize, markBaseMaskedLinks, movedUserinfoMask, normalizeCode, redactText, resolveHref, shownField, shownNormalize, stripControlChars, strictNormalize } from './normalize.js';
 
 export interface HtmlExtractOptions {
   /** Opt-in component semantics. The default keeps generic HTML visibility rules. */
@@ -60,12 +60,34 @@ export function nestingDepth(node: ParentNode): number {
 
 const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'template', 'nav', 'iframe', 'svg', 'canvas', 'object', 'embed', 'map', 'form', 'button', 'input', 'select', 'textarea', 'dialog']);
 const SKIP_ROLES = new Set(['navigation', 'banner', 'contentinfo', 'complementary', 'search', 'menu', 'menubar', 'dialog']);
+// The roles of WAI-ARIA 1.2 that a page can name. The role attribute is a list of tokens, and the first one that is
+// a known role is the role of the element; a token the list does not know is a fallback that is passed over.
+const KNOWN_ROLES = new Set([
+  'alert', 'alertdialog', 'application', 'article', 'banner', 'blockquote', 'button', 'caption', 'cell', 'checkbox', 'code', 'columnheader', 'combobox',
+  'complementary', 'contentinfo', 'definition', 'deletion', 'dialog', 'directory', 'document', 'emphasis', 'feed', 'figure', 'form', 'generic', 'grid',
+  'gridcell', 'group', 'heading', 'img', 'insertion', 'link', 'list', 'listbox', 'listitem', 'log', 'main', 'marquee', 'math', 'menu', 'menubar',
+  'menuitem', 'menuitemcheckbox', 'menuitemradio', 'meter', 'navigation', 'none', 'note', 'option', 'paragraph', 'presentation', 'progressbar', 'radio',
+  'radiogroup', 'region', 'row', 'rowgroup', 'rowheader', 'scrollbar', 'search', 'searchbox', 'separator', 'slider', 'spinbutton', 'status', 'strong',
+  'subscript', 'superscript', 'switch', 'tab', 'table', 'tablist', 'tabpanel', 'term', 'textbox', 'time', 'timer', 'toolbar', 'tooltip', 'tree', 'treegrid',
+  'treeitem',
+]);
+/** Whether the value of a role attribute names a left-out role: the first token that is a known role, read in
+ * lower case after the ASCII white space around the tokens, is one of SKIP_ROLES (0.2.43, K2-F3). Up to 0.2.42 the whole
+ * value was compared, so role="navigation foo" and role=" navigation " were compared as content. */
+function hasSkippedRole(role: string | undefined): boolean {
+  if (role === undefined) return false;
+  for (const token of role.split(/[ \t\n\f\r]+/)) {
+    const name = token.toLowerCase();
+    if (KNOWN_ROLES.has(name)) return SKIP_ROLES.has(name);
+  }
+  return false;
+}
 /** Whether an opening tag starts a subtree this extraction leaves out: the tag and role lists of isSkipped. The
  * Markdown side asks it for inline raw HTML, so a button or a script in a Markdown paragraph is left out the way
  * it is in an HTML paragraph (0.2.22, found by an outside review 2026-10-02). */
 export function opensExcludedSubtree(name: string, attribs: Record<string, string>): boolean {
   if (SKIP_TAGS.has(name)) return true;
-  return SKIP_ROLES.has((attribs['role'] ?? '').toLowerCase());
+  return hasSkippedRole(attribs['role']);
 }
 export const BLOCK_TAGS = new Set(['address', 'article', 'aside', 'blockquote', 'details', 'summary', 'dd', 'dl', 'dt', 'div', 'fieldset', 'figcaption', 'figure', 'footer', 'header', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hgroup', 'hr', 'li', 'main', 'ol', 'p', 'pre', 'section', 'table', 'ul', 'body', 'html', 'center', 'tr', 'td', 'th', 'thead', 'tbody', 'tfoot', 'caption']);
 const HEADING_RE = /^h([1-6])$/;
@@ -193,8 +215,7 @@ function visibleCode(nodes: ChildNode[], profile: 'generic' | 'starlight' = 'gen
 
 function isSkipped(el: Element, root: Element, profile: 'generic' | 'starlight' = 'generic', ignoreHidden = false): boolean {
   if (SKIP_TAGS.has(el.name) && !(profile === 'starlight' && el.name === 'iframe' && iframeLink(el))) return true;
-  const role = (el.attribs['role'] ?? '').toLowerCase();
-  if (SKIP_ROLES.has(role)) return true;
+  if (hasSkippedRole(el.attribs['role'])) return true;
   if (el.attribs['hidden'] !== undefined && !ignoreHidden) return true;
   const asideTitle = profile === 'starlight' && el.name === 'p' && hasClass(el, 'starlight-aside__title')
     && el.parent instanceof Element && el.parent.name === 'aside' && hasClass(el.parent, 'starlight-aside');
@@ -461,7 +482,7 @@ function taskState(li: Element, profile: 'generic' | 'starlight' = 'generic'): b
     if (node.name === 'input' && (node.attribs['type'] ?? '').toLowerCase() === 'checkbox') {
       // The checkbox's own role counts as well: a checkbox with an excluded role (navigation, dialog and the rest of
       // SKIP_ROLES) is left out like any other element with that role, so it cannot answer for the item (MP-10).
-      if (hiddenAttr(node) || SKIP_ROLES.has((node.attribs['role'] ?? '').toLowerCase())) continue;
+      if (hiddenAttr(node) || hasSkippedRole(node.attribs['role'])) continue;
       return node.attribs['checked'] !== undefined;
     }
     // Every other subtree the extraction leaves out (a form, a nav, a template, a role such as navigation, hidden
@@ -727,10 +748,17 @@ function hiddenInPage(el: Element): boolean {
  * (the maintainer's decision of 2026-10-02). A form with a left-out role still counts. */
 function inExcludedSubtree(el: Element): boolean {
   for (let cur: ParentNode | null = el; cur instanceof Element; cur = cur.parent) {
-    if (cur.name === 'form' && cur !== el && !SKIP_ROLES.has((cur.attribs['role'] ?? '').toLowerCase())) continue;
+    if (cur.name === 'form' && cur !== el && !hasSkippedRole(cur.attribs['role'])) continue;
     if (isSkipped(cur, el)) return true;
   }
   return false;
+}
+
+/** The selector as an error names it. One that holds an at sign is read as an address: the reading a link target gets,
+ * or everything up to the last at sign as ***, so a selector that is a pasted URL with a password never reaches a
+ * report whole (0.2.43). */
+function selectorValue(selector: string): string {
+  return selector.includes('@') ? movedUserinfoMask(selector) ?? `***@${selector.slice(selector.lastIndexOf('@') + 1)}` : selector;
 }
 
 function pickRoot(doc: Document, selector: string | undefined, notes: string[], issues: ExtractionIssue[]): { root: Element; strategy: string; confidence: 'high' | 'low' } {
@@ -742,10 +770,12 @@ function pickRoot(doc: Document, selector: string | undefined, notes: string[], 
       // The parser's message quotes the selector, so it is capped like the value (0.2.39, found by an outside review 2026-11-14).
       // It quotes a piece of it in lower case or from the middle, where no masking can tell what the piece was, so a
       // selector that holds a URL with a credential or a query value gets no quotation at all.
-      const quotes = redactText(selector) !== stripControlChars(selector);
-      throw new HtmlExtractError(`Invalid selector: ${quotes ? 'the selector is not repeated, because it holds a URL with user information, a query value or a fragment' : capValue((err as Error).message)}`, selector);
+      // An at sign alone is enough (0.2.43, PF5 of the second outside masking run): the parser's message quotes the
+      // text around it in lower case, and the value it names is masked by the reading a link target gets.
+      const quotes = selector.includes('@') || redactText(selector) !== stripControlChars(selector);
+      throw new HtmlExtractError(`Invalid selector: ${quotes ? 'the selector is not repeated, because it holds a URL with user information, a query value or a fragment' : capValue((err as Error).message)}`, selectorValue(selector));
     }
-    if (matches.length === 0) throw new HtmlExtractError('Selector matched no element.', selector);
+    if (matches.length === 0) throw new HtmlExtractError('Selector matched no element.', selectorValue(selector));
     if (matches.length > 1) notes.push(`Selector "${capValue(selector)}" matched ${matches.length} elements; the first in document order was used.`);
     return { root: matches[0] as Element, strategy: `selector:${capValue(selector)}`, confidence: 'high' };
   }

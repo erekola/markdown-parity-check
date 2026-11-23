@@ -129,6 +129,10 @@ function oneLineText(value: string): string {
 }
 
 function maskOptionRaw(value: string): string {
+  // The reading a link target gets comes first (0.2.43, PF2 and PF4 of the second outside masking run): maskUrl alone
+  // showed ftp://corp.example\erik:secret@example.com/ as ftp://corp.example/erik:secret@example.com/.
+  const moved = movedUserinfoMask(value);
+  if (moved !== null) return moved;
   const plain = value.replace(/[\t\n\r]/g, '');
   let hasHost = false;
   try {

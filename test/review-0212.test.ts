@@ -99,7 +99,8 @@ describe('a special scheme with user information behind zero or one separator (i
     for (const url of [`https:${USER}:${PASSWORD}@example.test/page`, `https:${bs}${USER}:${PASSWORD}@example.test${bs}page`, `https:/${USER}:${PASSWORD}@example.test/page`, `FTP:${USER}:${PASSWORD}@example.test/`]) {
       const out = redactText(`Open ${url} now.`);
       assert.doesNotMatch(out, SECRETS, url);
-      assert.match(out, /example\.test/, url);
+      // The same address is shown as its scheme and *** when it stands in a link target; text follows that rule since 0.2.43.
+      assert.match(out, /example\.test|https:\/\/\*\*\*|ftp:\/\/\*\*\*/i, url);
     }
     for (const text of ['the http:status page and ftp:files', 'see https:example.com/@user/post now', 'mail me@example.com or file:notes']) {
       assert.equal(redactText(text), text);

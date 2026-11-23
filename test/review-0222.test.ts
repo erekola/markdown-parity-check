@@ -404,7 +404,9 @@ describe('0.2.22 follow-up F6: a scheme-less credential in a rejected option val
         message = err.message;
       }
       assert.doesNotMatch(message, /USR|SEC|RET/, v);
-      assert.match(message, /\(got "\*\*\*@(example\.com|host)"\)/, v);
+      // A shape with a number sign, a question mark or a space before its at sign is shown as its scheme word and ***
+      // since 0.2.43, as a link target is; the others keep ***@host.
+      assert.match(message, /\(got "(\*\*\*@(example\.com|host)|[a-z]+:\*\*\*)"\)/, v);
     }
   });
 

@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { expandIPv6, isPublicIPv6 } from '../src/netguard.js';
-import { excerpt, insideHiddenUrlPart, insideParenUserinfo, maskBareUserinfo, maskHref, maskParenUserinfo, redactText, stripControlChars } from '../src/normalize.js';
+import { excerpt, findUserinfoSpans, insideHiddenUrlPart, insideParenUserinfo, maskBareUserinfo, maskHref, maskMovedUserinfoTokens, maskParenUserinfo, redactText, stripControlChars } from '../src/normalize.js';
 
 const OLD_URL_IN_TEXT = /(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"'()]+|www\.[^\s<>"'()]+|(?<![\w/])\/[^\s<>"'()]*[?#][^\s<>"'()]*|[^\s<>"'()]*\?[\w%.-]+=[^\s<>"'()]*|[\/\\]{2}[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*|(?:https?|ftp|wss?|file):[\/\\]*[^\s<>"'()\/\\?#@]*@[^\s<>"'()]*|(?<![\w.-])(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:[a-z0-9_-]+\.)+(?:[a-z]{2,}|xn--[a-z0-9-]+))(?::\d+)?(?:[\/\\]|#(?=[^\s<>"'()]*=))[^\s<>"'()]*)/giu;
 
@@ -145,10 +145,19 @@ TEXT_PIECES.push('1.2.3.4', 'localhost', 'localho\u017ft', 'xn--p1ai', 'a_b.', '
 describe('linear-time redaction and address parsing (0.2.2)', () => {
   it('redactText gives the same result as the old expression on random text', () => {
     const next = prng(20260911);
+    let compared = 0;
     for (let i = 0; i < 20000; i++) {
       const text = randomText(next, TEXT_PIECES, 24);
+      // 0.2.43: a token that movedUserinfoMask reads as hiding user information is shown as a link target is, which the
+      // old expression does not do, so those texts are the one difference and are left out of this comparison.
+      const before = maskParenUserinfo(stripControlChars(text));
+      // The same holds for the user information of a "//" with no scheme before it (a span that starts two characters
+      // ahead of its authority, where a "://" span starts at least three characters ahead).
+      if (maskMovedUserinfoTokens(before) !== before || findUserinfoSpans(before, true).some((s) => s.from - s.start === 2)) continue;
+      compared++;
       assert.equal(redactText(text), oldRedactText(text), JSON.stringify(text));
     }
+    assert.ok(compared > 15000, `compared ${compared} of 20000`);
   });
 
   it('redactText still masks every kind of URL-like run', () => {

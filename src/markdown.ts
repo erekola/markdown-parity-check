@@ -8,7 +8,7 @@ import type { Block, Extraction, ExtractionIssue, Link, ListInfo } from './model
 import { BLOCK_TAGS, extractHtml, HtmlDepthError, MAX_NESTING_DEPTH, opensExcludedSubtree } from './html.js';
 import { parseDocument, Parser } from 'htmlparser2';
 import { Element, Text, type ChildNode } from 'domhandler';
-import { bareUserinfoSpansOf, excerpt, extractNumbers, insideHiddenUrlPart, insideUserinfoSpan, LinkTargetError, looseNormalize, markBaseMaskedLinks, MAX_LINK_TARGET_CHARS, normalizeCode, resolveHref, shownField, shownNormalize, strictNormalize, userinfoSpansOf, type UserinfoSpan } from './normalize.js';
+import { bareUserinfoSpansOf, movedUserinfoSpansOf, excerpt, extractNumbers, insideHiddenUrlPart, insideUserinfoSpan, LinkTargetError, looseNormalize, markBaseMaskedLinks, MAX_LINK_TARGET_CHARS, normalizeCode, resolveHref, shownField, shownNormalize, strictNormalize, userinfoSpansOf, type UserinfoSpan } from './normalize.js';
 
 export interface MarkdownExtractOptions {
   baseUrl?: string | null;
@@ -45,6 +45,7 @@ interface Ctx {
   /** The user information found in source, computed when the first literal autolink asks. */
   userinfo?: UserinfoSpan[];
   bareUserinfo?: UserinfoSpan[];
+  movedUserinfo?: UserinfoSpan[];
   blocks: Block[];
   notes: string[];
   issues: ExtractionIssue[];
@@ -278,13 +279,19 @@ function inline(ctx: Ctx, node: PhrasingContent | Nodes, run: InlineRun): void {
       const at = node.position?.start.offset;
       if (at !== undefined && ctx.source[at] !== '[' && ctx.source[at] !== '<') {
         if (insideHiddenUrlPart(ctx.source, at)) link.masked = true;
-        else if (ctx.source.includes('://')) {
+        else if (ctx.source.includes('//')) {
           ctx.userinfo ??= userinfoSpansOf(ctx.source);
           if (insideUserinfoSpan(ctx.userinfo, at)) link.masked = true;
         }
         if (!link.masked && ctx.source.includes('@')) {
           ctx.bareUserinfo ??= bareUserinfoSpansOf(ctx.source);
           if (insideUserinfoSpan(ctx.bareUserinfo, at)) link.masked = true;
+        }
+        // A link read out of a token that the report text masks as moved user information (0.2.43), as the
+        // e-mail address in ":secret@host.example/x".
+        if (!link.masked && ctx.source.includes('@')) {
+          ctx.movedUserinfo ??= movedUserinfoSpansOf(ctx.source);
+          if (insideUserinfoSpan(ctx.movedUserinfo, at)) link.masked = true;
         }
       }
       run.links.push(link);

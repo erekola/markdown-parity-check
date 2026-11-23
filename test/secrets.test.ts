@@ -188,7 +188,8 @@ describe('the independent review of 0.2.10 before release', () => {
     const url = `https://admin:${PASSWORD}/tail@internal.example/path?k=${TOKEN}`;
     for (const out of [maskHref(url), maskUrl(url), redactText(`see ${url} now`)]) {
       assert.doesNotMatch(out, new RegExp(`${PASSWORD}|admin|${TOKEN}`), out);
-      assert.match(out, /internal\.example\/path/, out);
+      // redactText shows a refused authority as a link target is shown (0.2.43): its scheme and ***, with no host.
+      assert.match(out, /internal\.example\/path|^see https:\/\/\*\*\*\/ now$/, out);
     }
     let error: unknown;
     try {

@@ -412,6 +412,20 @@ function requestOnce(url: URL, address: { address: string; family: 4 | 6 }, opti
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 /**
+ * The text of a Location header. Node hands a header over as the bytes read as latin1, one code unit per byte, but the
+ * URL standard reads the value of Location as UTF-8, as a browser does. Without this, the three bytes of U+3000 at the
+ * start of a Location stood as three Latin-1 characters that no edge trimming knows, so a followed address that held
+ * user information after them was shown whole (0.2.43, PU1 of the second outside masking run), and a path with
+ * non-ASCII characters was followed double encoded. A value that holds a code unit above 0xFF is already text and
+ * stays; bytes that are not valid UTF-8 become U+FFFD, as the standard decodes them.
+ */
+function locationText(value: string | undefined): string | undefined {
+  if (value === undefined) return value;
+  for (let i = 0; i < value.length; i++) if (value.charCodeAt(i) > 0xff) return value;
+  return Buffer.from(value, 'latin1').toString('utf8');
+}
+
+/**
  * Fetches one URL with the given Accept header, following at most maxRedirects redirects. Every hop is
  * validated by the address policy. Returns the decoded body; the raw response is not stored.
  */
@@ -455,7 +469,7 @@ async function fetchWithDeadline(input: string, options: FetchOptions, maxRedire
       throw err;
     }
     if (REDIRECT_STATUSES.has(res.status)) {
-      const loc = res.headers['location'];
+      const loc = locationText(res.headers['location']);
       // Both name the address after a hiding hop as shown, not as resolved (N1 of the eighth check).
       if (!loc) throw new FetchError('protocol', shown === null ? url.href : shown, `HTTP ${res.status} without a Location header.`);
       if (redirects >= maxRedirects) throw new FetchError('too_many_redirects', shown === null ? url.href : shown, `More than ${maxRedirects} redirects.`);

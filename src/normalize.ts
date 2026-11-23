@@ -602,8 +602,8 @@ const isSpaceCode = (c: number) => (c < 0x80 ? c === 0x20 || (c >= 0x09 && c <= 
  * authority, so "visit https://example.com for me@x.org" is prose. The authority does not go on past white
  * space either when the text between its last colon and that white space is a port, one to five digits, or the end
  * of a bracketed host, so "Use https://api.example.com:8443 or write to ops@example.org" keeps the address; a
- * password of digits only that is followed by white space is therefore not masked. Only the report text uses it: the
- * numbers of the comparison are read through hideUrlSecrets, which does not.
+ * password of digits only that is followed by white space is therefore not masked. The report text uses it, and from
+ * 0.2.43 so do the numbers a number finding shows (hideUrlSecrets).
  */
 export function maskAuthorityUserinfo(text: string, whiteSpaceInside = false): string {
   const spans = findUserinfoSpans(text, whiteSpaceInside);
@@ -638,16 +638,30 @@ export function findUserinfoSpans(text: string, whiteSpaceInside = false): Useri
   const spans: UserinfoSpan[] = [];
   let pos = 0;
   let from = 0;
+  // The next "://", searched again only when the text up to it is behind: -2 is not searched yet, -1 is none left.
+  let colonAt = -2;
   for (;;) {
-    const colon = text.indexOf('://', from);
-    if (colon < 0) break;
-    from = colon + 3;
+    if (colonAt === -2 || (colonAt >= 0 && colonAt < from)) colonAt = text.indexOf('://', from);
+    // With whiteSpaceInside, the authority of a network-path reference, "//name:secret@host/p" with no scheme, counts
+    // too (0.2.43): a report shows the same text a link target would, and movedUserinfoMask reads that target.
+    const bare = whiteSpaceInside ? indexOfBareSlashes(text, from, colonAt < 0 ? text.length : colonAt) : -1;
+    let start: number;
+    let authFrom: number;
     let hasLetter = false;
-    let start = colon;
-    for (let k = colon; k > pos && isSchemeChar(text.charCodeAt(k - 1)); k--) {
-      start = k - 1;
-      if (isLetter(text.charCodeAt(k - 1))) hasLetter = true;
+    if (bare >= 0) {
+      start = bare;
+      authFrom = bare + 2;
+      hasLetter = true;
+    } else {
+      if (colonAt < 0) break;
+      authFrom = colonAt + 3;
+      start = colonAt;
+      for (let k = colonAt; k > pos && isSchemeChar(text.charCodeAt(k - 1)); k--) {
+        start = k - 1;
+        if (isLetter(text.charCodeAt(k - 1))) hasLetter = true;
+      }
     }
+    from = authFrom;
     if (!hasLetter) continue;
     let at = -1;
     let lastAt = -1;
@@ -670,7 +684,10 @@ export function findUserinfoSpans(text: string, whiteSpaceInside = false): Useri
       }
       if (c === 0x3a) {
         lastColon = e;
-        if (firstColon < 0 && !isSpaceCode(text.charCodeAt(e + 1))) firstColon = e;
+        // A tab after the colon is removed by the URL parser, so it does not make the colon a label of prose as a plain
+        // space does (0.2.43, QA-2 D5). A line break stays prose here: "host:" at the end of a line is a label.
+        const next = text.charCodeAt(e + 1);
+        if (firstColon < 0 && (!isSpaceCode(next) || next === 0x09)) firstColon = e;
       }
       if (c === 0x40) {
         lastAt = e;
@@ -679,11 +696,29 @@ export function findUserinfoSpans(text: string, whiteSpaceInside = false): Useri
     }
     if (lastAt > firstSpace && firstSpace >= 0 && firstColon >= 0 && firstColon < lastAt) at = lastAt;
     if (at < 0) continue;
-    spans.push({ start, from: colon + 3, at });
+    // A network-path reference without a scheme counts only with a colon in front of its "@", a password, as in
+    // //name:secret@host/p; "//name@host/p" holds no secret the report text needs to hide.
+    if (bare >= 0 && !(firstColon >= 0 && firstColon < at)) continue;
+    spans.push({ start, from: authFrom, at });
     pos = at + 1;
     from = pos;
   }
   return spans;
+}
+
+/** The first "//" in text[from, limit) that starts a network-path reference: the start of the text, or a character
+ * that is not a scheme character, a colon, a slash or a backslash in front of it. "a.example//b", "x://y" and "/a//b"
+ * hold none. */
+function indexOfBareSlashes(text: string, from: number, limit: number): number {
+  let i = from;
+  while (i < limit) {
+    i = text.indexOf('//', i);
+    if (i < 0 || i >= limit) return -1;
+    const prev = i === 0 ? -1 : text.charCodeAt(i - 1);
+    if (prev === -1 || !(isSchemeChar(prev) || prev === 0x3a || prev === 0x2f || prev === 0x5c)) return i;
+    i++;
+  }
+  return -1;
 }
 
 /** The text as a report shows it, for a raw text whose white space the credential masking needs: undefined when
@@ -716,17 +751,25 @@ const CONTROL_WHITE_SPACE = /[\t\n\v\f\r]/;
  * address is ordinary text.
  */
 export function dropAuthorityControls(text: string): string {
-  if (!CONTROL_WHITE_SPACE.test(text) || !text.includes('://')) return text;
+  if (!CONTROL_WHITE_SPACE.test(text) || !text.includes('//')) return text;
   let out = '';
   let pos = 0;
   let from = 0;
   for (;;) {
     const colon = text.indexOf('://', from);
-    if (colon < 0) break;
-    from = colon + 3;
+    // A network-path reference, "//name:secret@host/p", is read too (0.2.43, QA-2 D5): the tab after its colon is part of
+    // the user information, and the page text has turned it into a space by the time the masking reads it.
+    const bare = indexOfBareSlashes(text, from, colon < 0 ? text.length : colon);
+    if (colon < 0 && bare < 0) break;
     let hasLetter = false;
-    for (let k = colon; k > pos && isSchemeChar(text.charCodeAt(k - 1)); k--) {
-      if (isLetter(text.charCodeAt(k - 1))) hasLetter = true;
+    if (bare >= 0) {
+      from = bare + 2;
+      hasLetter = true;
+    } else {
+      from = colon + 3;
+      for (let k = colon; k > pos && isSchemeChar(text.charCodeAt(k - 1)); k--) {
+        if (isLetter(text.charCodeAt(k - 1))) hasLetter = true;
+      }
     }
     if (!hasLetter) continue;
     let lastAt = -1;
@@ -753,6 +796,8 @@ export function dropAuthorityControls(text: string): string {
       }
     }
     if (firstControl < 0) continue;
+    // Without a scheme the reference counts only with a colon in front of the "@": "//name@host" holds no secret.
+    if (bare >= 0 && !colonRule) continue;
     if (lastColon >= 0 && isPortText(text, lastColon + 1, firstControl)) continue;
     if (firstControl > from && text.charCodeAt(firstControl - 1) === 0x5d) continue;
     if (!colonRule && lineBreak) continue;
@@ -836,8 +881,11 @@ function isBareHostText(t: string, from: number, to: number): boolean {
  * A failed candidate is scanned to its own delimiter and a found one to its "@", so the scan stays linear. The result
  * is a display aid and is never part of a comparison key.
  */
-export function findBareUserinfoSpans(text: string): UserinfoSpan[] {
+export function findBareUserinfoSpans(source: string): UserinfoSpan[] {
   const spans: UserinfoSpan[] = [];
+  // A tab right after the colon belongs to the user information, as it does after "://" (the other white space ends
+  // the run). The tab is read as a letter, which keeps every position, so the spans index the source text.
+  const text = source.includes(':\t') ? source.replace(/:\t/g, ':a') : source;
   const runs = new RegExp(RUN.source, RUN.flags);
   for (let run = runs.exec(text); run !== null; run = runs.exec(text)) {
     const s = run.index;
@@ -917,7 +965,95 @@ export function redactText(text: string): string {
   // The control characters go first as well as last: a vertical tab, a form feed, U+2028 or U+0085 inside the user
   // information would otherwise end the authority for the masking and be removed afterwards, which left a credential
   // that read as a whole URL.
-  return stripControlChars(rewriteUrlRuns(maskBareUserinfo(maskAuthorityUserinfo(maskParenUserinfo(stripControlChars(text)), true)), maskHref));
+  // maskMovedUserinfoTokens runs before the run-based masking, which rewrites an address and so would reformat
+  // https://CORP\erik:secret@host/x into https://corp/erik:secret@host/x before any rule could read what was written.
+  return stripControlChars(rewriteUrlRuns(maskBareUserinfo(maskAuthorityUserinfo(maskMovedUserinfoTokens(maskParenUserinfo(stripControlChars(text))), true)), maskHref));
+}
+
+/**
+ * Every token of a report text that movedUserinfoMask reads as hiding user information is shown as that function shows
+ * a link target (0.2.43, PF1 and K2-F5 of the second outside masking run): a token is the text between white space,
+ * angle brackets and double quotes, without the opening brackets and quotes and the closing brackets, quotes and
+ * punctuation around it. Before, only link targets had these rules, so the same address that a link finding showed
+ * as https://*** stood whole in an excerpt, a message or the text of a link. A password that holds white space cannot
+ * be read from one token: it is masked here only in the forms with "://" or a leading "//", which the user
+ * information rules of maskAuthorityUserinfo find. A token that overlaps a user information that those rules or
+ * maskBareUserinfo find in the whole text, such as postgres://user:secret@host/db, https://"admin":secret@host/ or
+ * user:secret@host.example/p, is left to them, so the documented shapes keep their output. Display only.
+ */
+export function maskMovedUserinfoTokens(text: string): string {
+  if (!text.includes('@')) return text;
+  let own: UserinfoSpan[] | null = null;
+  let bare: UserinfoSpan[] | null = null;
+  // A tab right after a colon does not end the token, as it does not end the user information (findBareUserinfoSpans).
+  return text.replace(/(?:[^\s<>"]|(?<=:)\t)+/gu, (token, offset: number) => {
+    if (!token.includes('@')) return token;
+    const [lead, end] = tokenCore(token);
+    const core = token.slice(lead, end);
+    const shown = movedUserinfoMask(core);
+    if (shown === null || !credentialShaped(core)) return token;
+    own ??= findUserinfoSpans(text, true);
+    bare ??= findBareUserinfoSpans(text);
+    // Left to those rules only when one of them ends at the last "@" of the token, so that it masks as far as this one
+    // would; https://erik@corp:secret#x@host/ has a span that ends at its first "@" and is masked here.
+    const lastAt = offset + token.lastIndexOf('@');
+    if (spanEndsAt(own, lastAt) || spanEndsAt(bare, lastAt)) return token;
+    // The word in front of the colon keeps the case it was written in: only the link-target reading lower-cases it.
+    const word = /^[a-z][a-z0-9+.-]*/i.exec(core);
+    const shownCased = word !== null && shown.startsWith(word[0].toLowerCase() + ':') ? word[0] + shown.slice(word[0].length) : shown;
+    return token.slice(0, lead) + shownCased + token.slice(end);
+  });
+}
+
+/** Whether the text before the last "@" of a token, after a scheme word, holds a colon or a backslash, a question mark
+ * or a number sign: running text shows "https:example.com/@user/post" and "see:the@docs" as they are, where a link
+ * target of the same shape is masked, because a target is never prose. */
+function credentialShaped(core: string): boolean {
+  const word = /^[a-z][a-z0-9+.-]*:/i.exec(core);
+  const from = word === null ? 0 : word[0].length;
+  const between = core.slice(from, core.lastIndexOf('@'));
+  return between.includes(':') || (core.length > 1 && /[#?\\]/.test(between));
+}
+
+/** Whether one of the sorted, disjoint spans ends at the "@" at position at. */
+function spanEndsAt(spans: UserinfoSpan[], at: number): boolean {
+  let lo = 0;
+  let hi = spans.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (spans[mid]!.at < at) lo = mid + 1;
+    else hi = mid;
+  }
+  return spans[lo]?.at === at;
+}
+
+/** The part of a token that maskMovedUserinfoTokens reads: [first, end) without the opening brackets and quotes and
+ * the closing brackets, quotes and punctuation. */
+function tokenCore(token: string): [number, number] {
+  let lead = 0;
+  while (lead < token.length && "'([{".includes(token[lead]!)) lead++;
+  let end = token.length;
+  while (end > lead && ")']}.,;!".includes(token[end - 1]!)) end--;
+  return [lead, end];
+}
+
+/** The tokens of a source text that maskMovedUserinfoTokens would replace, as spans whose `from` is the first character
+ * and `at` the last one, for the position test of insideUserinfoSpan: a link that a Markdown parser reads out of such
+ * a token, such as the e-mail address in ":secret@host.example/x", is shown masked. The characters that
+ * stripControlChars removes are read as a letter, which keeps every position. */
+export function movedUserinfoSpansOf(text: string): UserinfoSpan[] {
+  const spans: UserinfoSpan[] = [];
+  if (!text.includes('@')) return spans;
+  const plain = text.replace(CONTROL_CHARS, (m) => 'a'.repeat(m.length));
+  const tokens = /[^\s<>"]+/gu;
+  for (let t = tokens.exec(plain); t !== null; t = tokens.exec(plain)) {
+    const token = t[0];
+    if (!token.includes('@')) continue;
+    const [lead, end] = tokenCore(token);
+    if (movedUserinfoMask(token.slice(lead, end)) === null) continue;
+    spans.push({ start: t.index + lead, from: t.index + lead, at: t.index + end - 1 });
+  }
+  return spans;
 }
 
 /**
@@ -930,7 +1066,10 @@ export function hideUrlSecrets(text: string): string {
   // review 2026-09-28): up to here only redactText applied it, so visibleNumbers below still read a
   // number straight out of an unmasked "(name):secret@" that the general run-based scan cannot see as
   // one run (see the comment on PAREN_USERINFO_START above).
-  return rewriteUrlRuns(maskAuthorityUserinfo(maskParenUserinfo(text)), withoutUrlSecrets);
+  // The forms that redactText masks with the reading of a link target, and the scheme-less name:secret@host, are taken
+  // out too (0.2.43, QA-2 D1): a password of digits only inside them would otherwise be read as a number and reach
+  // NUMBER_CHANGED. White space inside the user information stays out of this reading, as above.
+  return rewriteUrlRuns(maskBareUserinfo(maskAuthorityUserinfo(maskMovedUserinfoTokens(maskParenUserinfo(text)), true)), withoutUrlSecrets);
 }
 
 /**
@@ -1100,7 +1239,14 @@ export function movedUserinfoMask(written: string): string | null {
       return before.includes(':') && !before.includes('/') ? '***' : null;
     }
     if (special) return shown;
-    return rest.slice(0, rest.lastIndexOf('@')).includes(':') ? `${name}:***` : null;
+    const before = rest.slice(0, rest.lastIndexOf('@'));
+    if (before.includes(':')) return `${name}:***`;
+    // user:secret#x@host.example/p, user:ab?secret@host/p, user:secret x@host/p and user:secret\x@host/p: the secret
+    // stands in front of a delimiter that ends the span maskBareUserinfo reads, so only the scheme word is shown, as
+    // for a colon in the user information (0.2.43, PL1 and PF3 of the second outside masking run). A one-letter
+    // word is a drive letter, as in C:\dir\file@2x.png, and stays.
+    if (name.length > 1 && /[\s#?\\]/.test(before)) return `${name}:***`;
+    return null;
   }
   if (name === 'file') return shown;
   // A non-special scheme with an empty authority, as in gopher:///user:secret@host, keeps the rest in its path.
